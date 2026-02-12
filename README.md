@@ -333,7 +333,7 @@ interface IIdentityNetwork {
 }
 ```
 
-**Note:** The Identity Network is not fully specified yet. However we believe the business logic remains similar even if the interface should change slightly.
+**Note:** The Identity Network is not fully specified yet. However, we believe the business logic remains similar even if the interface should change slightly.
 
 **Enforcement points:**
 - `deposit()` — caller must be a member
@@ -381,7 +381,7 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 **Implementation:** Anyone can call `fund()`. The function is purely additive — the caller provides tokens via `safeTransferFrom(msg.sender, ...)`.
 
-**Rationale:** Flexibility - enables Halo's to fund a redemption from any PAU. Does not introduce any risks that cannot otherwise be resolved by the Admin or Sky (e.g. a Halo funds the wrong NFAT), as funds are moving into Sky.
+**Rationale:** Flexibility - enables Halos to fund a redemption from any PAU. Does not introduce any risks that cannot otherwise be resolved by the Admin or Sky (e.g. a Halo funds the wrong NFAT), as funds are moving into Sky.
 
 ## Outstanding Questions
 
