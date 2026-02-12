@@ -37,9 +37,14 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
     event IdentityNetworkUpdated(address indexed manager);
     event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
 
-    constructor(string memory name_, address admin, address asset_, address pau_, address identityNetwork_, address operator)
-        ERC721(string.concat("NFAT-", name_), string.concat("NFAT-", name_))
-    {
+    constructor(
+        string memory name_,
+        address admin,
+        address asset_,
+        address pau_,
+        address identityNetwork_,
+        address operator
+    ) ERC721(string.concat("NFAT-", name_), string.concat("NFAT-", name_)) {
         require(admin != address(0), "NFATFacility/admin-zero-address");
         require(asset_ != address(0), "NFATFacility/asset-zero-address");
         require(pau_ != address(0), "NFATFacility/pau-zero-address");
@@ -78,11 +83,7 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
 
     /// @notice Issue an NFAT: claim funds from a depositor's queue and mint an NFAT.
     /// @dev Only callable by the facility operator. Amount may be zero.
-    function issue(address depositor, uint256 amount, uint256 tokenId)
-        external
-        nonReentrant
-        onlyRole(ROLE_OPERATOR)
-    {
+    function issue(address depositor, uint256 amount, uint256 tokenId) external nonReentrant onlyRole(ROLE_OPERATOR) {
         require(depositor != address(0), "NFATFacility/depositor-zero-address");
 
         if (amount > 0) {

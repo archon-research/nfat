@@ -212,7 +212,8 @@ contract NFATFacilityTest is Test {
     }
 
     function testIdentityCheckEnforced() public {
-        NFATFacility restricted = new NFATFacility("Test", admin, address(asset), pau, address(identityNetwork), operator);
+        NFATFacility restricted =
+            new NFATFacility("Test", admin, address(asset), pau, address(identityNetwork), operator);
 
         asset.mint(depositor, 100e18);
         vm.startPrank(depositor);
@@ -242,7 +243,8 @@ contract NFATFacilityTest is Test {
     }
 
     function testIdentityNetworkClearedAllowsAll() public {
-        NFATFacility restricted = new NFATFacility("Test", admin, address(asset), pau, address(identityNetwork), operator);
+        NFATFacility restricted =
+            new NFATFacility("Test", admin, address(asset), pau, address(identityNetwork), operator);
 
         vm.prank(admin);
         restricted.setIdentityNetwork(address(0));
