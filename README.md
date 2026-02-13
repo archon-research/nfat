@@ -27,7 +27,7 @@ Requirements organized by lifecycle phase.
 | # | Requirement |
 |---|-------------|
 | I-1 | The Operator may issue an NFAT by claiming funds from a depositor's queue and minting an ERC-721 |
-| I-2 | Issued funds are transferred to the NFAT PAU (ALMProxy) |
+| I-2 | Issued funds are transferred to the recipient (NFAT PAU / ALMProxy) |
 | I-3 | An NFAT may be issued with zero principal (reinvest existing NFAT) |
 | I-4 | Token IDs are Operator-assigned; uniqueness enforced (e.g. by ERC-721 `_mint`) |
 | I-5 | On-chain metadata records minting timestamp, depositor, and principal |
@@ -41,7 +41,7 @@ Requirements organized by lifecycle phase.
 | F-2 | Funded amounts accumulate until claimed |
 | F-3 | The same fund/claim cycle supports bullet, amortizing, and periodic-interest patterns |
 | F-4 | Payment scheduling is managed by the Synome and NFAT Beacon |
-| F-5 | The Halo may retract funding from an NFAT (operational error correction) |
+| F-5 | Admin may retract funding from an NFAT via `emergencyWithdrawFunding()` (operational error correction) |
 
 ### 4. Claims
 
@@ -64,7 +64,7 @@ Requirements organized by lifecycle phase.
 |---|-------------|
 | A-1 | Deposits and transfers are optionally gated by an on-chain Identity Network |
 | A-2 | Admin may set or clear the Identity Network at any time |
-| A-3 | `DEFAULT_ADMIN_ROLE` (Halo Proxy) manages roles, PAU, identity network, and emergency recovery |
+| A-3 | `DEFAULT_ADMIN_ROLE` (Halo Proxy) manages roles, recipient address, identity network, and emergency recovery |
 | A-4 | `ROLE_OPERATOR` (NFAT Beacon) issues NFATs |
 
 ### 7. Admin & Emergency
@@ -72,7 +72,7 @@ Requirements organized by lifecycle phase.
 | # | Requirement |
 |---|-------------|
 | E-1 | Admin may recover any ERC-20 token held by the facility |
-| E-2 | Admin may update the PAU address |
+| E-2 | Admin may update the recipient address |
 | E-3 | Granular pause controls - in case of emergencies or to retire a facility |
 | E-4 | Admin may emergency-withdraw from deposits or claimable balances with proper accounting |
 
@@ -93,7 +93,7 @@ flowchart LR
     NFATPAU -->|3. deploy| RWA[RWA]
 ```
 
-Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the NFAT's PAU. A single PAU can serve many facilities - the PAU address is configurable per facility and multiple facilities can point to the same one.
+Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU / ALMProxy). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
 
 ### Payment
 
@@ -122,11 +122,10 @@ The core contract. Manages the deposit queue, NFAT issuance, funding (NFAT payme
 | Variable | Type | Mutability | Description |
 |----------|------|------------|-------------|
 | `asset` | `IERC20` | immutable | ERC-20 token accepted for deposits and claims |
-| `pau` | `address` | mutable | Payment Account Unit (ALMProxy) - receives funds when NFATs are issued; updatable via `setPau()` |
+| `recipient` | `address` | mutable | Address that receives funds when NFATs are issued (typically the NFAT PAU / ALMProxy); updatable via `setRecipient()` |
 | `identityNetwork` | `IIdentityNetwork` | mutable | Optional membership gating; `address(0)` disables checks |
 | `deposits` | `mapping(address => uint256)` | mutable | Queued deposit balance per depositor |
 | `claimable` | `mapping(uint256 => uint256)` | mutable | Funded (claimable) balance per NFAT token ID |
-| `funded` | `mapping(uint256 => mapping(address => uint256))` | mutable | Per-funder contribution per NFAT token ID |
 | `nfatData` | `mapping(uint256 => NFATData)` | mutable | On-chain metadata per NFAT; each entry is written once at issuance and never modified (immutable) |
 
 #### NFATData Struct
@@ -141,9 +140,9 @@ struct NFATData {
 
 #### Roles
 
-| Role | Actor | Purpose | 
+| Role | Actor | Purpose |
 |------|-------|---------|
-| `DEFAULT_ADMIN_ROLE` | HaloProxy | Role administration, PAU updates, identity network management, emergency recovery. Held by Halo Proxy which can make updates through spells. |
+| `DEFAULT_ADMIN_ROLE` | HaloProxy | Role administration, recipient updates, identity network management, emergency recovery. Held by Halo Proxy which can make updates through spells. |
 | `ROLE_OPERATOR` | Halo's GovOps/NFAT Beacon | Pulls funds and issues NFATs |
 
 #### Constructor
@@ -153,7 +152,7 @@ constructor(
     string memory name_,       // facility class name - ERC721 name and symbol become "NFAT-{name_}"
     address admin,             // DEFAULT_ADMIN_ROLE
     address asset_,            // immutable ERC-20
-    address pau_,              // initial PAU (ALMProxy)
+    address recipient_,        // initial recipient (typically NFAT PAU / ALMProxy)
     address identityNetwork_,  // optional (can be address(0))
     address operator           // ROLE_OPERATOR
 )
@@ -196,7 +195,7 @@ Claims funds from a depositor's queue and mints an NFAT. `amount` may be zero to
 | Access | `ROLE_OPERATOR` |
 | Guards | `depositor != address(0)`, if `amount > 0`: `deposits[depositor] >= amount` |
 | Effects | `deposits[depositor] -= amount` (if > 0), `_mint(depositor, tokenId)`, `nfatData[tokenId]` set |
-| Interactions | `asset.safeTransfer(pau, amount)` (if > 0) |
+| Interactions | `asset.safeTransfer(recipient, amount)` (if > 0) |
 | Event | `Issued(depositor, amount, tokenId)` |
 
 **`fund(uint256 tokenId, uint256 amount)`**
@@ -207,9 +206,9 @@ Funds an NFAT for the holder to claim. Anyone can call (caller provides tokens).
 |---|---|
 | Access | Any |
 | Guards | `amount > 0`, token must exist |
-| Effects | `claimable[tokenId] += amount`, `funded[tokenId][msg.sender] += amount` |
+| Effects | `claimable[tokenId] += amount` |
 | Interactions | `asset.safeTransferFrom(msg.sender, this, amount)` |
-| Event | `Funded(tokenId, amount)` |
+| Event | `Funded(tokenId, msg.sender, amount)` |
 
 **`claim(uint256 tokenId, uint256 amount)`**
 
@@ -223,21 +222,9 @@ Claims funded amounts for an NFAT. The caller specifies the amount to claim. The
 | Interactions | `asset.safeTransfer(msg.sender, amount)` |
 | Event | `Claimed(tokenId, claimer, amount)` |
 
-**`defund(uint256 tokenId, uint256 amount)`**
-
-Retracts funding from an NFAT. Mirrors `withdraw()` - the original funder reclaims their contribution. Limited by both the caller's `funded` balance and the remaining `claimable` balance (amounts already claimed by the holder cannot be defunded).
-
-| | |
-|---|---|
-| Access | Any (funder of the NFAT) |
-| Guards | `amount > 0`, `funded[tokenId][msg.sender] >= amount`, `claimable[tokenId] >= amount` |
-| Effects | `funded[tokenId][msg.sender] -= amount`, `claimable[tokenId] -= amount` |
-| Interactions | `asset.safeTransfer(msg.sender, amount)` |
-| Event | `Defunded(tokenId, msg.sender, amount)` |
-
 **`emergencyWithdraw(address token, address to, uint256 amount)`**
 
-Emergency recovery of any ERC-20 token held by the facility. Does not adjust internal accounting - use `emergencyWithdrawDeposit` or `emergencyWithdrawDefund` for tracked balances.
+Emergency recovery of any ERC-20 token held by the facility. Does not adjust internal accounting - use `emergencyWithdrawDeposit` or `emergencyWithdrawFunding` for tracked balances.
 
 | | |
 |---|---|
@@ -258,7 +245,7 @@ Emergency withdrawal from a depositor's queued balance with proper accounting.
 | Interactions | `asset.safeTransfer(to, amount)` |
 | Event | `EmergencyWithdraw(address(asset), to, amount)` |
 
-**`emergencyWithdrawDefund(uint256 tokenId, address to, uint256 amount)`**
+**`emergencyWithdrawFunding(uint256 tokenId, address to, uint256 amount)`**
 
 Emergency withdrawal from an NFAT's claimable balance with proper accounting.
 
@@ -270,16 +257,16 @@ Emergency withdrawal from an NFAT's claimable balance with proper accounting.
 | Interactions | `asset.safeTransfer(to, amount)` |
 | Event | `EmergencyWithdraw(address(asset), to, amount)` |
 
-**`setPau(address pau_)`**
+**`setRecipient(address recipient_)`**
 
-Updates the PAU address (where funds from NFAT issuance are sent).
+Updates the recipient address (where funds from NFAT issuance are sent). Typically set to the NFAT PAU (ALMProxy).
 
 | | |
 |---|---|
 | Access | `DEFAULT_ADMIN_ROLE` |
-| Guards | `pau_ != address(0)` |
-| Effects | `pau = pau_` |
-| Event | `PauUpdated(pau_)` |
+| Guards | `recipient_ != address(0)` |
+| Effects | `recipient = recipient_` |
+| Event | `RecipientUpdated(recipient_)` |
 
 **`setIdentityNetwork(address manager)`**
 
@@ -300,15 +287,15 @@ Sets or clears the identity network. Pass `address(0)` to disable.
 #### Events
 
 ```solidity
+event FacilityCreated(address indexed asset, address indexed recipient, address indexed admin, address operator);
 event Deposited(address indexed depositor, uint256 amount);
 event Withdrawn(address indexed depositor, uint256 amount);
 event Issued(address indexed depositor, uint256 amount, uint256 indexed tokenId);
-event Funded(uint256 indexed tokenId, uint256 amount);
+event Funded(uint256 indexed tokenId, address indexed funder, uint256 amount);
 event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
-event PauUpdated(address indexed pau);
+event RecipientUpdated(address indexed recipient);
 event IdentityNetworkUpdated(address indexed manager);
 event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
-event Defunded(uint256 indexed tokenId, address indexed funder, uint256 amount);
 ```
 
 ## Operational Flow
@@ -329,7 +316,7 @@ sequenceDiagram
     Note over Prime,Beacon: 2. ISSUE
     Beacon->>Facility: issue(depositor, amount, tokenId)
     Facility-->>Prime: mint NFAT
-    Facility->>NFATPAU: safeTransfer(amount)
+    Facility->>NFATPAU: safeTransfer(amount) [to recipient]
     Beacon->>Beacon: record in Synome
 
     Note over Prime,Beacon: 3. FUND (repeats)
@@ -389,22 +376,14 @@ interface IIdentityNetwork {
 
 ## Emergency Recovery
 
-The facility holds two types of tracked balances - `deposits[address]` (queued pre-issuance) and `claimable[uint256]` (funded NFAT balances) - plus potentially untracked surplus (e.g. tokens sent directly to the contract). Four functions cover the full recovery surface, from routine corrections to last-resort extraction.
-
-### Routine: Funder self-service
-
-| Scenario | Function | Who | Accounting |
-|----------|----------|-----|------------|
-| Halo funds wrong NFAT or wrong amount | `defund()` | The funder (e.g. Halo PAU) | Decrements `funded[tokenId][sender]` and `claimable[tokenId]` |
-
-`defund()` mirrors `withdraw()` - the original funder reclaims their contribution without admin intervention. Limited by both the caller's `funded` balance and remaining `claimable` (amounts already claimed by the holder cannot be defunded).
+The facility holds two types of tracked balances - `deposits[address]` (queued pre-issuance) and `claimable[tokenId]` (funded NFAT balances) - plus potentially untracked surplus (e.g. tokens sent directly to the contract). Three functions cover the full recovery surface.
 
 ### Emergency: Admin recovery with accounting
 
 | Scenario | Function | Accounting |
 |----------|----------|------------|
 | Need to recover queued deposits on behalf of a depositor | `emergencyWithdrawDeposit()` | Decrements `deposits[depositor]` |
-| Need to recover funded balance from an NFAT | `emergencyWithdrawDefund()` | Decrements `claimable[tokenId]` |
+| Need to recover funded balance from an NFAT (e.g. wrong NFAT or wrong amount) | `emergencyWithdrawFunding()` | Decrements `claimable[tokenId]` |
 
 These are admin-only (`DEFAULT_ADMIN_ROLE` / Halo Proxy via spell). They adjust internal accounting so the invariant `asset.balanceOf(facility) >= sum(deposits) + sum(claimable)` is preserved.
 
@@ -422,7 +401,7 @@ The generic `emergencyWithdraw()` does not adjust `deposits` or `claimable`. Usi
 asset.balanceOf(facility) >= sum(deposits[*]) + sum(claimable[*])
 ```
 
-All accounting-aware functions (`withdraw`, `defund`, `emergencyWithdrawDeposit`, `emergencyWithdrawDefund`, `claim`, `issue`) maintain this invariant. Only the generic `emergencyWithdraw()` can break it.
+All accounting-aware functions (`withdraw`, `emergencyWithdrawDeposit`, `emergencyWithdrawFunding`, `claim`, `issue`) maintain this invariant. Only the generic `emergencyWithdraw()` can break it.
 
 ---
 
@@ -480,3 +459,6 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 5. **Should we support granular pause controls?**
    Not yet implemented in the POC. Could serve as a "retire" mechanism for deprecated facilities. The PAU's rate limits provide some control over outflows, but per-function pausing on the facility would add finer-grained emergency response.
+
+6. **Should funders be able to self-service retract funding (`defund()`)?**
+   Currently, retracting funded amounts requires admin intervention via `emergencyWithdrawFunding()`, which means a spell is needed to correct any funding mistake. An alternative is a self-service `defund()` function that lets the original funder reclaim their contribution directly. This would require per-funder accounting (`claimable[tokenId][funder]` instead of flat `claimable[tokenId]`), which in turn means `claim()` must specify which funder to draw from. The tradeoff: self-service defund avoids the spell overhead for operational corrections (e.g. Halo funds wrong NFAT or wrong amount), but adds complexity to the claim flow and mapping structure. An implementation of defund is available on the `feat/defund` branch.
