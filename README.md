@@ -49,7 +49,7 @@ Requirements organized by lifecycle phase.
 |---|-------------|
 | C-1 | Only the NFAT owner may claim funded amounts |
 | C-2 | The caller specifies the claim amount - for tax optimization purposes |
-| C-3 | The NFAT is not burned on claim — it persists for future funding cycles |
+| C-3 | The NFAT is not burned on claim - it persists for future funding cycles |
 
 ### 5. NFAT Transfers
 
@@ -93,7 +93,7 @@ flowchart LR
     NFATPAU -->|3. deploy| RWA[RWA]
 ```
 
-Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the NFAT's PAU. A single PAU can serve many facilities — the PAU address is configurable per facility and multiple facilities can point to the same one.
+Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the NFAT's PAU. A single PAU can serve many facilities - the PAU address is configurable per facility and multiple facilities can point to the same one.
 
 ### Payment
 
@@ -150,7 +150,7 @@ struct NFATData {
 
 ```solidity
 constructor(
-    string memory name_,       // facility class name — ERC721 name and symbol become "NFAT-{name_}"
+    string memory name_,       // facility class name - ERC721 name and symbol become "NFAT-{name_}"
     address admin,             // DEFAULT_ADMIN_ROLE
     address asset_,            // immutable ERC-20
     address pau_,              // initial PAU (ALMProxy)
@@ -225,7 +225,7 @@ Claims funded amounts for an NFAT. The caller specifies the amount to claim. The
 
 **`defund(uint256 tokenId, uint256 amount)`**
 
-Retracts funding from an NFAT. Mirrors `withdraw()` — the original funder reclaims their contribution. Limited by both the caller's `funded` balance and the remaining `claimable` balance (amounts already claimed by the holder cannot be defunded).
+Retracts funding from an NFAT. Mirrors `withdraw()` - the original funder reclaims their contribution. Limited by both the caller's `funded` balance and the remaining `claimable` balance (amounts already claimed by the holder cannot be defunded).
 
 | | |
 |---|---|
@@ -237,7 +237,7 @@ Retracts funding from an NFAT. Mirrors `withdraw()` — the original funder recl
 
 **`emergencyWithdraw(address token, address to, uint256 amount)`**
 
-Emergency recovery of any ERC-20 token held by the facility. Does not adjust internal accounting — use `emergencyWithdrawDeposit` or `emergencyWithdrawDefund` for tracked balances.
+Emergency recovery of any ERC-20 token held by the facility. Does not adjust internal accounting - use `emergencyWithdrawDeposit` or `emergencyWithdrawDefund` for tracked balances.
 
 | | |
 |---|---|
@@ -295,7 +295,7 @@ Sets or clears the identity network. Pass `address(0)` to disable.
 
 `_requireMember(address account)` - if `identityNetwork != address(0)`, calls `identityNetwork.isMember(account)` and reverts if false. Called by `deposit()` and the `_update()` ERC-721 override.
 
-`_update(address to, uint256 tokenId, address auth)` — overrides ERC-721. If `to != address(0)` (mint or transfer), enforces identity check. Burns (`to == address(0)`) skip the check.
+`_update(address to, uint256 tokenId, address auth)` - overrides ERC-721. If `to != address(0)` (mint or transfer), enforces identity check. Burns (`to == address(0)`) skip the check.
 
 #### Events
 
@@ -376,12 +376,12 @@ interface IIdentityNetwork {
 **Note:** The Identity Network is not fully specified yet. However, we believe the business logic remains similar even if the interface should change slightly.
 
 **Enforcement points:**
-- `deposit()` — caller must be a member
-- `_update()` — recipient of mints and transfers must be a member
+- `deposit()` - caller must be a member
+- `_update()` - recipient of mints and transfers must be a member
 - Burns are exempt (allows emergency exit regardless of membership)
 
 **Management:**
-- `setIdentityNetwork(address)` — callable by `DEFAULT_ADMIN_ROLE`
+- `setIdentityNetwork(address)` - callable by `DEFAULT_ADMIN_ROLE`
 - Pass `address(0)` to disable all membership checks
 - Identity Network is managed externally (e.g., by Halos)
 
@@ -389,7 +389,7 @@ interface IIdentityNetwork {
 
 ## Emergency Recovery
 
-The facility holds two types of tracked balances — `deposits[address]` (queued pre-issuance) and `claimable[uint256]` (funded NFAT balances) — plus potentially untracked surplus (e.g. tokens sent directly to the contract). Four functions cover the full recovery surface, from routine corrections to last-resort extraction.
+The facility holds two types of tracked balances - `deposits[address]` (queued pre-issuance) and `claimable[uint256]` (funded NFAT balances) - plus potentially untracked surplus (e.g. tokens sent directly to the contract). Four functions cover the full recovery surface, from routine corrections to last-resort extraction.
 
 ### Routine: Funder self-service
 
@@ -397,7 +397,7 @@ The facility holds two types of tracked balances — `deposits[address]` (queued
 |----------|----------|-----|------------|
 | Halo funds wrong NFAT or wrong amount | `defund()` | The funder (e.g. Halo PAU) | Decrements `funded[tokenId][sender]` and `claimable[tokenId]` |
 
-`defund()` mirrors `withdraw()` — the original funder reclaims their contribution without admin intervention. Limited by both the caller's `funded` balance and remaining `claimable` (amounts already claimed by the holder cannot be defunded).
+`defund()` mirrors `withdraw()` - the original funder reclaims their contribution without admin intervention. Limited by both the caller's `funded` balance and remaining `claimable` (amounts already claimed by the holder cannot be defunded).
 
 ### Emergency: Admin recovery with accounting
 
@@ -414,7 +414,7 @@ These are admin-only (`DEFAULT_ADMIN_ROLE` / Halo Proxy via spell). They adjust 
 |----------|----------|------------|
 | Recover any ERC-20 (wrong token sent, untracked surplus) | `emergencyWithdraw()` | None |
 
-The generic `emergencyWithdraw()` does not adjust `deposits` or `claimable`. Using it on the facility's own asset will break the accounting invariant — it exists for cases where no tracked balance corresponds to the tokens being recovered. Prefer the accounting-aware functions above when possible.
+The generic `emergencyWithdraw()` does not adjust `deposits` or `claimable`. Using it on the facility's own asset will break the accounting invariant - it exists for cases where no tracked balance corresponds to the tokens being recovered. Prefer the accounting-aware functions above when possible.
 
 ### Invariant
 
