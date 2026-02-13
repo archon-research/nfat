@@ -26,6 +26,7 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
 
     mapping(address => uint256) public deposits;
     mapping(uint256 => uint256) public claimable;
+    mapping(uint256 => mapping(address => uint256)) public funded;
     mapping(uint256 => NFATData) public nfatData;
 
     event Deposited(address indexed depositor, uint256 amount);
@@ -36,6 +37,8 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
     event PauUpdated(address indexed pau);
     event IdentityNetworkUpdated(address indexed manager);
     event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
+    event Defunded(uint256 indexed tokenId, address indexed funder, uint256 amount);
+    event FacilityCreated(address indexed asset, address indexed pau, address indexed admin, address operator);
 
     constructor(
         string memory name_,
@@ -56,6 +59,8 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ROLE_OPERATOR, operator);
+
+        emit FacilityCreated(asset_, pau_, admin, operator);
     }
 
     /// @notice Deposit asset into the facility queue.
@@ -63,8 +68,8 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         require(amount > 0, "NFATFacility/amount-zero");
         _requireMember(msg.sender);
 
-        deposits[msg.sender] += amount;
         asset.safeTransferFrom(msg.sender, address(this), amount);
+        deposits[msg.sender] += amount;
 
         emit Deposited(msg.sender, amount);
     }
@@ -105,8 +110,9 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         require(amount > 0, "NFATFacility/amount-zero");
         require(_ownerOf(tokenId) != address(0), "NFATFacility/token-missing");
 
-        claimable[tokenId] += amount;
         asset.safeTransferFrom(msg.sender, address(this), amount);
+        claimable[tokenId] += amount;
+        funded[tokenId][msg.sender] += amount;
 
         emit Funded(tokenId, amount);
     }
@@ -125,6 +131,22 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         emit Claimed(tokenId, msg.sender, amount);
     }
 
+    /// @notice Retract funding from an NFAT. Mirrors withdraw() for the fund side.
+    function defund(uint256 tokenId, uint256 amount) external nonReentrant {
+        require(amount > 0, "NFATFacility/amount-zero");
+
+        uint256 funderBalance = funded[tokenId][msg.sender];
+        require(funderBalance >= amount, "NFATFacility/insufficient-funded");
+        funded[tokenId][msg.sender] = funderBalance - amount;
+
+        uint256 available = claimable[tokenId];
+        require(available >= amount, "NFATFacility/insufficient-claimable");
+        claimable[tokenId] = available - amount;
+
+        asset.safeTransfer(msg.sender, amount);
+        emit Defunded(tokenId, msg.sender, amount);
+    }
+
     /// @notice Emergency token recovery.
     function emergencyWithdraw(address token, address to, uint256 amount)
         external
@@ -134,6 +156,40 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         require(to != address(0), "NFATFacility/to-zero-address");
         IERC20(token).safeTransfer(to, amount);
         emit EmergencyWithdraw(token, to, amount);
+    }
+
+    /// @notice Emergency withdrawal from deposit queue with accounting.
+    function emergencyWithdrawDeposit(address depositor, address to, uint256 amount)
+        external
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(to != address(0), "NFATFacility/to-zero-address");
+        require(amount > 0, "NFATFacility/amount-zero");
+
+        uint256 pending = deposits[depositor];
+        require(pending >= amount, "NFATFacility/insufficient-pending");
+        deposits[depositor] = pending - amount;
+
+        asset.safeTransfer(to, amount);
+        emit EmergencyWithdraw(address(asset), to, amount);
+    }
+
+    /// @notice Emergency withdrawal from claimable balance with accounting.
+    function emergencyWithdrawDefund(uint256 tokenId, address to, uint256 amount)
+        external
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(to != address(0), "NFATFacility/to-zero-address");
+        require(amount > 0, "NFATFacility/amount-zero");
+
+        uint256 available = claimable[tokenId];
+        require(available >= amount, "NFATFacility/insufficient-claimable");
+        claimable[tokenId] = available - amount;
+
+        asset.safeTransfer(to, amount);
+        emit EmergencyWithdraw(address(asset), to, amount);
     }
 
     /// @notice Update the PAU address.
