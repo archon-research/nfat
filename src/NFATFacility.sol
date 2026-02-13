@@ -20,7 +20,7 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
     }
 
     IERC20 public immutable asset;
-    address public pau;
+    address public recipient; // NFAT PAU (ALM Proxy)
 
     IIdentityNetwork public identityNetwork;
 
@@ -28,12 +28,13 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
     mapping(uint256 => uint256) public claimable;
     mapping(uint256 => NFATData) public nfatData;
 
+    event FacilityCreated(address indexed asset, address indexed recipient, address indexed admin, address operator);
     event Deposited(address indexed depositor, uint256 amount);
     event Withdrawn(address indexed depositor, uint256 amount);
     event Issued(address indexed depositor, uint256 amount, uint256 indexed tokenId);
-    event Funded(uint256 indexed tokenId, uint256 amount);
+    event Funded(uint256 indexed tokenId, address indexed funder, uint256 amount);
     event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
-    event PauUpdated(address indexed pau);
+    event RecipientUpdated(address indexed recipient);
     event IdentityNetworkUpdated(address indexed manager);
     event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
 
@@ -41,21 +42,23 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         string memory name_,
         address admin,
         address asset_,
-        address pau_,
+        address recipient_,
         address identityNetwork_,
         address operator
     ) ERC721(string.concat("NFAT-", name_), string.concat("NFAT-", name_)) {
         require(admin != address(0), "NFATFacility/admin-zero-address");
         require(asset_ != address(0), "NFATFacility/asset-zero-address");
-        require(pau_ != address(0), "NFATFacility/pau-zero-address");
+        require(recipient_ != address(0), "NFATFacility/recipient-zero-address");
         require(operator != address(0), "NFATFacility/operator-zero-address");
 
         asset = IERC20(asset_);
-        pau = pau_;
+        recipient = recipient_;
         identityNetwork = IIdentityNetwork(identityNetwork_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ROLE_OPERATOR, operator);
+
+        emit FacilityCreated(asset_, recipient_, admin, operator);
     }
 
     /// @notice Deposit asset into the facility queue.
@@ -63,8 +66,8 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         require(amount > 0, "NFATFacility/amount-zero");
         _requireMember(msg.sender);
 
-        deposits[msg.sender] += amount;
         asset.safeTransferFrom(msg.sender, address(this), amount);
+        deposits[msg.sender] += amount;
 
         emit Deposited(msg.sender, amount);
     }
@@ -90,7 +93,7 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
             uint256 pending = deposits[depositor];
             require(pending >= amount, "NFATFacility/insufficient-pending");
             deposits[depositor] = pending - amount;
-            asset.safeTransfer(pau, amount);
+            asset.safeTransfer(recipient, amount);
         }
 
         _mint(depositor, tokenId);
@@ -105,10 +108,10 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         require(amount > 0, "NFATFacility/amount-zero");
         require(_ownerOf(tokenId) != address(0), "NFATFacility/token-missing");
 
-        claimable[tokenId] += amount;
         asset.safeTransferFrom(msg.sender, address(this), amount);
+        claimable[tokenId] += amount;
 
-        emit Funded(tokenId, amount);
+        emit Funded(tokenId, msg.sender, amount);
     }
 
     /// @notice Claim funded amounts for an NFAT.
@@ -136,11 +139,45 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         emit EmergencyWithdraw(token, to, amount);
     }
 
-    /// @notice Update the PAU address.
-    function setPau(address pau_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(pau_ != address(0), "NFATFacility/pau-zero-address");
-        pau = pau_;
-        emit PauUpdated(pau_);
+    /// @notice Emergency withdrawal from deposit queue with accounting.
+    function emergencyWithdrawDeposit(address depositor, address to, uint256 amount)
+        external
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(to != address(0), "NFATFacility/to-zero-address");
+        require(amount > 0, "NFATFacility/amount-zero");
+
+        uint256 pending = deposits[depositor];
+        require(pending >= amount, "NFATFacility/insufficient-pending");
+        deposits[depositor] = pending - amount;
+
+        asset.safeTransfer(to, amount);
+        emit EmergencyWithdraw(address(asset), to, amount);
+    }
+
+    /// @notice Emergency withdrawal from claimable balance with accounting.
+    function emergencyWithdrawFunding(uint256 tokenId, address to, uint256 amount)
+        external
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(to != address(0), "NFATFacility/to-zero-address");
+        require(amount > 0, "NFATFacility/amount-zero");
+
+        uint256 available = claimable[tokenId];
+        require(available >= amount, "NFATFacility/insufficient-claimable");
+        claimable[tokenId] = available - amount;
+
+        asset.safeTransfer(to, amount);
+        emit EmergencyWithdraw(address(asset), to, amount);
+    }
+
+    /// @notice Update the recipient address (NFAT PAU (ALMProxy)).
+    function setRecipient(address recipient_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(recipient_ != address(0), "NFATFacility/recipient-zero-address");
+        recipient = recipient_;
+        emit RecipientUpdated(recipient_);
     }
 
     /// @notice Set or clear the identity network. Pass address(0) to disable identity checks.

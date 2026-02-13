@@ -116,7 +116,7 @@ contract NFATFacilityTest is Test {
 
         assertEq(facility.ownerOf(99), depositor);
         assertEq(facility.deposits(depositor), 0);
-        assertEq(asset.balanceOf(pau), 0);
+        assertEq(asset.balanceOf(facility.recipient()), 0);
 
         (uint48 mintedAt, address dataDepositor, uint256 principal) = facility.nfatData(99);
         assertEq(dataDepositor, depositor);
@@ -322,46 +322,181 @@ contract NFATFacilityTest is Test {
         vm.expectRevert("NFATFacility/asset-zero-address");
         new NFATFacility("Test", admin, address(0), pau, address(0), operator);
 
-        vm.expectRevert("NFATFacility/pau-zero-address");
+        vm.expectRevert("NFATFacility/recipient-zero-address");
         new NFATFacility("Test", admin, address(asset), address(0), address(0), operator);
 
         vm.expectRevert("NFATFacility/operator-zero-address");
         new NFATFacility("Test", admin, address(asset), pau, address(0), address(0));
     }
 
-    function testSetPau() public {
-        address newPau = address(0xBEEF);
+    function testSetRecipient() public {
+        address newRecipient = address(0xBEEF);
 
         vm.expectEmit(true, false, false, false);
-        emit NFATFacility.PauUpdated(newPau);
+        emit NFATFacility.RecipientUpdated(newRecipient);
 
         vm.prank(admin);
-        facility.setPau(newPau);
+        facility.setRecipient(newRecipient);
 
-        assertEq(facility.pau(), newPau);
+        assertEq(facility.recipient(), newRecipient);
     }
 
-    function testSetPauRoleRequired() public {
+    function testSetRecipientRoleRequired() public {
         bytes32 role = facility.DEFAULT_ADMIN_ROLE();
         vm.prank(address(0xF00D));
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
         );
-        facility.setPau(address(0xBEEF));
+        facility.setRecipient(address(0xBEEF));
     }
 
-    function testSetPauZeroAddressReverts() public {
+    function testSetRecipientZeroAddressReverts() public {
         vm.prank(admin);
-        vm.expectRevert("NFATFacility/pau-zero-address");
-        facility.setPau(address(0));
+        vm.expectRevert("NFATFacility/recipient-zero-address");
+        facility.setRecipient(address(0));
     }
 
-    function testFuzz_SetPauIssueUsesNewPau(uint96 depositAmount) public {
+    // ── emergencyWithdrawDeposit ─────────────────────────────────────────
+
+    function testEmergencyWithdrawDeposit() public {
+        uint256 amount = 50e18;
+        asset.mint(depositor, amount);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), amount);
+        facility.deposit(amount);
+        vm.stopPrank();
+
+        address recipient = address(0xBEEF);
+        vm.prank(admin);
+        facility.emergencyWithdrawDeposit(depositor, recipient, 30e18);
+
+        assertEq(facility.deposits(depositor), 20e18);
+        assertEq(asset.balanceOf(recipient), 30e18);
+    }
+
+    function testFuzz_EmergencyWithdrawDeposit(uint96 depositAmt, uint96 withdrawAmt) public {
+        uint256 deposit = bound(uint256(depositAmt), 1, 1_000_000e18);
+        uint256 withdraw = bound(uint256(withdrawAmt), 1, deposit);
+
+        asset.mint(depositor, deposit);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), deposit);
+        facility.deposit(deposit);
+        vm.stopPrank();
+
+        address recipient = address(0xBEEF);
+        vm.prank(admin);
+        facility.emergencyWithdrawDeposit(depositor, recipient, withdraw);
+
+        assertEq(facility.deposits(depositor), deposit - withdraw);
+        assertEq(asset.balanceOf(recipient), withdraw);
+    }
+
+    function testEmergencyWithdrawDepositRequiresAdmin() public {
+        bytes32 role = facility.DEFAULT_ADMIN_ROLE();
+        vm.prank(address(0xF00D));
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
+        );
+        facility.emergencyWithdrawDeposit(depositor, address(0xBEEF), 1);
+    }
+
+    function testEmergencyWithdrawDepositInsufficientReverts() public {
+        vm.prank(admin);
+        vm.expectRevert("NFATFacility/insufficient-pending");
+        facility.emergencyWithdrawDeposit(depositor, address(0xBEEF), 1);
+    }
+
+    function testEmergencyWithdrawDepositToZeroReverts() public {
+        vm.prank(admin);
+        vm.expectRevert("NFATFacility/to-zero-address");
+        facility.emergencyWithdrawDeposit(depositor, address(0), 1);
+    }
+
+    function testEmergencyWithdrawDepositZeroAmountReverts() public {
+        vm.prank(admin);
+        vm.expectRevert("NFATFacility/amount-zero");
+        facility.emergencyWithdrawDeposit(depositor, address(0xBEEF), 0);
+    }
+
+    // ── emergencyWithdrawFunding ─────────────────────────────────────────
+
+    function testEmergencyWithdrawFunding() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 1);
+
+        uint256 fundAmount = 100e18;
+        asset.mint(operator, fundAmount);
+        vm.startPrank(operator);
+        asset.approve(address(facility), fundAmount);
+        facility.fund(1, fundAmount);
+        vm.stopPrank();
+
+        address recipient = address(0xBEEF);
+        vm.prank(admin);
+        facility.emergencyWithdrawFunding(1, recipient, 40e18);
+
+        assertEq(facility.claimable(1), 60e18);
+        assertEq(asset.balanceOf(recipient), 40e18);
+    }
+
+    function testFuzz_EmergencyWithdrawFunding(uint96 fundAmt, uint96 withdrawAmt) public {
+        uint256 fund_ = bound(uint256(fundAmt), 1, 1_000_000e18);
+        uint256 withdraw_ = bound(uint256(withdrawAmt), 1, fund_);
+
+        vm.prank(operator);
+        facility.issue(depositor, 0, 1);
+
+        asset.mint(operator, fund_);
+        vm.startPrank(operator);
+        asset.approve(address(facility), fund_);
+        facility.fund(1, fund_);
+        vm.stopPrank();
+
+        address recipient = address(0xBEEF);
+        vm.prank(admin);
+        facility.emergencyWithdrawFunding(1, recipient, withdraw_);
+
+        assertEq(facility.claimable(1), fund_ - withdraw_);
+        assertEq(asset.balanceOf(recipient), withdraw_);
+    }
+
+    function testEmergencyWithdrawFundingRequiresAdmin() public {
+        bytes32 role = facility.DEFAULT_ADMIN_ROLE();
+        vm.prank(address(0xF00D));
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
+        );
+        facility.emergencyWithdrawFunding(1, address(0xBEEF), 1);
+    }
+
+    function testEmergencyWithdrawFundingInsufficientReverts() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 1);
+
+        vm.prank(admin);
+        vm.expectRevert("NFATFacility/insufficient-claimable");
+        facility.emergencyWithdrawFunding(1, address(0xBEEF), 1);
+    }
+
+    function testEmergencyWithdrawFundingToZeroReverts() public {
+        vm.prank(admin);
+        vm.expectRevert("NFATFacility/to-zero-address");
+        facility.emergencyWithdrawFunding(1, address(0), 1);
+    }
+
+    function testEmergencyWithdrawFundingZeroAmountReverts() public {
+        vm.prank(admin);
+        vm.expectRevert("NFATFacility/amount-zero");
+        facility.emergencyWithdrawFunding(1, address(0xBEEF), 0);
+    }
+
+    function testFuzz_SetRecipientIssueUsesNewRecipient(uint96 depositAmount) public {
         uint256 deposit = bound(uint256(depositAmount), 1, 1_000_000e18);
-        address newPau = address(0xBEEF);
+        address newRecipient = address(0xBEEF);
 
         vm.prank(admin);
-        facility.setPau(newPau);
+        facility.setRecipient(newRecipient);
 
         asset.mint(depositor, deposit);
         vm.startPrank(depositor);
@@ -372,7 +507,7 @@ contract NFATFacilityTest is Test {
         vm.prank(operator);
         facility.issue(depositor, deposit, 1);
 
-        assertEq(asset.balanceOf(newPau), deposit);
+        assertEq(asset.balanceOf(newRecipient), deposit);
         assertEq(asset.balanceOf(pau), 0);
     }
 }
