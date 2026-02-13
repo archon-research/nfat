@@ -27,7 +27,7 @@ Requirements organized by lifecycle phase.
 | # | Requirement |
 |---|-------------|
 | I-1 | The Operator may issue an NFAT by claiming funds from a depositor's queue and minting an ERC-721 |
-| I-2 | Issued funds are transferred to the recipient (NFAT PAU / ALMProxy) |
+| I-2 | Issued funds are transferred to the recipient (NFAT PAU (ALMProxy)) |
 | I-3 | An NFAT may be issued with zero principal (reinvest existing NFAT) |
 | I-4 | Token IDs are Operator-assigned; uniqueness enforced (e.g. by ERC-721 `_mint`) |
 | I-5 | On-chain metadata records minting timestamp, depositor, and principal |
@@ -93,7 +93,7 @@ flowchart LR
     NFATPAU -->|3. deploy| RWA[RWA]
 ```
 
-Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU / ALMProxy). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
+Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU (ALMProxy)). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
 
 ### Payment
 
@@ -122,7 +122,7 @@ The core contract. Manages the deposit queue, NFAT issuance, funding (NFAT payme
 | Variable | Type | Mutability | Description |
 |----------|------|------------|-------------|
 | `asset` | `IERC20` | immutable | ERC-20 token accepted for deposits and claims |
-| `recipient` | `address` | mutable | Address that receives funds when NFATs are issued (typically the NFAT PAU / ALMProxy); updatable via `setRecipient()` |
+| `recipient` | `address` | mutable | Address that receives funds when NFATs are issued (typically the NFAT PAU (ALMProxy)); updatable via `setRecipient()` |
 | `identityNetwork` | `IIdentityNetwork` | mutable | Optional membership gating; `address(0)` disables checks |
 | `deposits` | `mapping(address => uint256)` | mutable | Queued deposit balance per depositor |
 | `claimable` | `mapping(uint256 => uint256)` | mutable | Funded (claimable) balance per NFAT token ID |
@@ -152,7 +152,7 @@ constructor(
     string memory name_,       // facility class name - ERC721 name and symbol become "NFAT-{name_}"
     address admin,             // DEFAULT_ADMIN_ROLE
     address asset_,            // immutable ERC-20
-    address recipient_,        // initial recipient (typically NFAT PAU / ALMProxy)
+    address recipient_,        // initial recipient (typically NFAT PAU (ALMProxy))
     address identityNetwork_,  // optional (can be address(0))
     address operator           // ROLE_OPERATOR
 )

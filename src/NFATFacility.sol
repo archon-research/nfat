@@ -173,7 +173,7 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         emit EmergencyWithdraw(address(asset), to, amount);
     }
 
-    /// @notice Update the recipient address (NFAT PAU / ALMProxy).
+    /// @notice Update the recipient address (NFAT PAU (ALMProxy)).
     function setRecipient(address recipient_) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(recipient_ != address(0), "NFATFacility/recipient-zero-address");
         recipient = recipient_;
