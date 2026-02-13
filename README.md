@@ -1,12 +1,12 @@
 ---
 title: NFAT Technical Exploration
 status: Draft
-date: 2026-02-12
+date: 2026-02-13
 ---
 
 # NFAT Technical Exploration
 
-This document explores the NFAT (Non-Fungible Allocation Token) smart contract implementation. It describes the NFAT draft implementation, documents deliberate deviations from the [Laniakea NFAT specification](https://github.com/sky-ecosystem/laniakea-docs/blob/main/smart-contracts/nfats.md), and tracks open design questions.
+This document explores the NFAT (Non-Fungible Allocation Token) smart contract implementation. It describes the NFAT draft implementation, documents deliberate deviations from the [Laniakea NFAT specification](https://github.com/sky-ecosystem/laniakea-docs/blob/main/smart-contracts/nfats.md), and tracks open design questions. The Solidity implementation in this repository is a proof of concept intended to demonstrate the business logic.
 
 ---
 
@@ -443,8 +443,8 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 ## Outstanding Questions
 
-1. **What data should the `NFATData` struct include?** (`NFATFacility.sol:17`)
-   Currently stores `mintedAt`, `depositor`, and `principal`. Need to research if more metadata is needed from a business or operational POV.
+1. **Is the `NFATData` struct needed, and if so, what should it include?** (`NFATFacility.sol:17`)
+   Currently stores `mintedAt`, `depositor`, and `principal` on-chain at issuance. All of this data is already available from event logs (`Issued`). If no on-chain consumer needs to read these fields, the struct adds storage cost without clear benefit. If the struct is kept, need to research if more metadata is needed from a business or operational POV.
 
 2. **Should `emergencyWithdraw`'s `to` address be immutable?** (`NFATFacility.sol:132`)
    Setting the recovery destination in the constructor (e.g., to `DsPauseProxy` or similar) would reduce trust assumptions on the admin. Tradeoff: less flexibility in recovery scenarios.
