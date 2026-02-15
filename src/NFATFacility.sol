@@ -90,7 +90,12 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice Issue an NFAT: claim funds from a depositor's queue and mint an NFAT.
     /// @dev Only callable by the facility operator. Amount may be zero.
-    function issue(address depositor, uint256 amount, uint256 tokenId) external nonReentrant whenNotPaused onlyRole(ROLE_OPERATOR) {
+    function issue(address depositor, uint256 amount, uint256 tokenId)
+        external
+        nonReentrant
+        whenNotPaused
+        onlyRole(ROLE_OPERATOR)
+    {
         require(depositor != address(0), "NFATFacility/depositor-zero-address");
 
         if (amount > 0) {
@@ -133,11 +138,7 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /// @notice Rescue any ERC-20 token held by the facility.
-    function rescue(address token, address to, uint256 amount)
-        external
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
+    function rescue(address token, address to, uint256 amount) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
         require(to != address(0), "NFATFacility/to-zero-address");
         IERC20(token).safeTransfer(to, amount);
         emit Rescued(token, to, amount);
