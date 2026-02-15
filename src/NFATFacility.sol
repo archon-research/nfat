@@ -5,13 +5,15 @@ import {AccessControl} from "openzeppelin-contracts/contracts/access/AccessContr
 import {ERC721} from "openzeppelin-contracts/contracts/token/ERC721/ERC721.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Pausable} from "openzeppelin-contracts/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import {IIdentityNetwork} from "./interfaces/IIdentityNetwork.sol";
 
-contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
+contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     bytes32 public constant ROLE_OPERATOR = keccak256("OPERATOR");
+    bytes32 public constant ROLE_PAUSE = keccak256("PAUSE");
 
     struct NFATData {
         uint48 mintedAt;
@@ -36,7 +38,9 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
     event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
     event RecipientUpdated(address indexed recipient);
     event IdentityNetworkUpdated(address indexed manager);
-    event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
+    event Rescued(address indexed token, address indexed to, uint256 amount);
+    event RescuedDeposit(address indexed depositor, address indexed to, uint256 amount);
+    event RescuedFunding(uint256 indexed tokenId, address indexed to, uint256 amount);
 
     constructor(
         string memory name_,
@@ -62,7 +66,7 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
     }
 
     /// @notice Deposit asset into the facility queue.
-    function deposit(uint256 amount) external nonReentrant {
+    function deposit(uint256 amount) external nonReentrant whenNotPaused {
         require(amount > 0, "NFATFacility/amount-zero");
         _requireMember(msg.sender);
 
@@ -86,7 +90,7 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
 
     /// @notice Issue an NFAT: claim funds from a depositor's queue and mint an NFAT.
     /// @dev Only callable by the facility operator. Amount may be zero.
-    function issue(address depositor, uint256 amount, uint256 tokenId) external nonReentrant onlyRole(ROLE_OPERATOR) {
+    function issue(address depositor, uint256 amount, uint256 tokenId) external nonReentrant whenNotPaused onlyRole(ROLE_OPERATOR) {
         require(depositor != address(0), "NFATFacility/depositor-zero-address");
 
         if (amount > 0) {
@@ -104,7 +108,7 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
 
     /// @notice Fund an NFAT for the holder to claim.
     /// @dev Payments accumulate until the holder claims.
-    function fund(uint256 tokenId, uint256 amount) external nonReentrant {
+    function fund(uint256 tokenId, uint256 amount) external nonReentrant whenNotPaused {
         require(amount > 0, "NFATFacility/amount-zero");
         require(_ownerOf(tokenId) != address(0), "NFATFacility/token-missing");
 
@@ -115,7 +119,7 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
     }
 
     /// @notice Claim funded amounts for an NFAT.
-    function claim(uint256 tokenId, uint256 amount) external nonReentrant {
+    function claim(uint256 tokenId, uint256 amount) external nonReentrant whenNotPaused {
         require(ownerOf(tokenId) == msg.sender, "NFATFacility/not-owner");
         require(amount > 0, "NFATFacility/amount-zero");
 
@@ -128,19 +132,19 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         emit Claimed(tokenId, msg.sender, amount);
     }
 
-    /// @notice Emergency token recovery.
-    function emergencyWithdraw(address token, address to, uint256 amount)
+    /// @notice Rescue any ERC-20 token held by the facility.
+    function rescue(address token, address to, uint256 amount)
         external
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         require(to != address(0), "NFATFacility/to-zero-address");
         IERC20(token).safeTransfer(to, amount);
-        emit EmergencyWithdraw(token, to, amount);
+        emit Rescued(token, to, amount);
     }
 
-    /// @notice Emergency withdrawal from deposit queue with accounting.
-    function emergencyWithdrawDeposit(address depositor, address to, uint256 amount)
+    /// @notice Rescue from deposit queue with accounting.
+    function rescueDeposit(address depositor, address to, uint256 amount)
         external
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -153,11 +157,11 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         deposits[depositor] = pending - amount;
 
         asset.safeTransfer(to, amount);
-        emit EmergencyWithdraw(address(asset), to, amount);
+        emit RescuedDeposit(depositor, to, amount);
     }
 
-    /// @notice Emergency withdrawal from claimable balance with accounting.
-    function emergencyWithdrawFunding(uint256 tokenId, address to, uint256 amount)
+    /// @notice Rescue from claimable balance with accounting.
+    function rescueFunding(uint256 tokenId, address to, uint256 amount)
         external
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -170,7 +174,17 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         claimable[tokenId] = available - amount;
 
         asset.safeTransfer(to, amount);
-        emit EmergencyWithdraw(address(asset), to, amount);
+        emit RescuedFunding(tokenId, to, amount);
+    }
+
+    /// @notice Pause deposit, issue, fund, and claim.
+    function pause() external onlyRole(ROLE_PAUSE) {
+        _pause();
+    }
+
+    /// @notice Unpause deposit, issue, fund, and claim.
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
     }
 
     /// @notice Update the recipient address (NFAT PAU (ALMProxy)).

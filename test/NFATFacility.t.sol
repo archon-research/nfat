@@ -7,6 +7,7 @@ import {ERC20} from "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
 import {IAccessControl} from "openzeppelin-contracts/contracts/access/IAccessControl.sol";
 import {IERC721} from "openzeppelin-contracts/contracts/token/ERC721/IERC721.sol";
 import {IERC721Metadata} from "openzeppelin-contracts/contracts/token/ERC721/extensions/IERC721Metadata.sol";
+import {Pausable} from "openzeppelin-contracts/contracts/utils/Pausable.sol";
 import {NFATFacility} from "../src/NFATFacility.sol";
 
 contract MockERC20 is ERC20 {
@@ -39,6 +40,9 @@ contract NFATFacilityTest is Test {
         asset = new MockERC20();
         identityNetwork = new MockIdentityNetwork();
         facility = new NFATFacility("Test", admin, address(asset), pau, address(0), operator);
+        bytes32 pauseRole = facility.ROLE_PAUSE();
+        vm.prank(admin);
+        facility.grantRole(pauseRole, admin);
     }
 
     function testFuzz_DepositWithdraw(uint96 depositAmount, uint96 withdrawAmount) public {
@@ -286,26 +290,26 @@ contract NFATFacilityTest is Test {
         facility.issue(depositor, 0, 5);
     }
 
-    function testEmergencyWithdrawRequiresAdmin() public {
+    function testRescueRequiresAdmin() public {
         bytes32 role = facility.DEFAULT_ADMIN_ROLE();
         vm.prank(address(0xF00D));
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
         );
-        facility.emergencyWithdraw(address(asset), address(0xBEEF), 1);
+        facility.rescue(address(asset), address(0xBEEF), 1);
     }
 
-    function testEmergencyWithdraw() public {
+    function testRescue() public {
         asset.mint(address(facility), 10e18);
         vm.prank(admin);
-        facility.emergencyWithdraw(address(asset), depositor, 10e18);
+        facility.rescue(address(asset), depositor, 10e18);
         assertEq(asset.balanceOf(depositor), 10e18);
     }
 
-    function testEmergencyWithdrawToZeroReverts() public {
+    function testRescueToZeroReverts() public {
         vm.prank(admin);
         vm.expectRevert("NFATFacility/to-zero-address");
-        facility.emergencyWithdraw(address(asset), address(0), 1);
+        facility.rescue(address(asset), address(0), 1);
     }
 
     function testSupportsInterface() public {
@@ -356,9 +360,9 @@ contract NFATFacilityTest is Test {
         facility.setRecipient(address(0));
     }
 
-    // ── emergencyWithdrawDeposit ─────────────────────────────────────────
+    // ── rescueDeposit ─────────────────────────────────────────────────────
 
-    function testEmergencyWithdrawDeposit() public {
+    function testRescueDeposit() public {
         uint256 amount = 50e18;
         asset.mint(depositor, amount);
         vm.startPrank(depositor);
@@ -368,13 +372,13 @@ contract NFATFacilityTest is Test {
 
         address recipient = address(0xBEEF);
         vm.prank(admin);
-        facility.emergencyWithdrawDeposit(depositor, recipient, 30e18);
+        facility.rescueDeposit(depositor, recipient, 30e18);
 
         assertEq(facility.deposits(depositor), 20e18);
         assertEq(asset.balanceOf(recipient), 30e18);
     }
 
-    function testFuzz_EmergencyWithdrawDeposit(uint96 depositAmt, uint96 withdrawAmt) public {
+    function testFuzz_RescueDeposit(uint96 depositAmt, uint96 withdrawAmt) public {
         uint256 deposit = bound(uint256(depositAmt), 1, 1_000_000e18);
         uint256 withdraw = bound(uint256(withdrawAmt), 1, deposit);
 
@@ -386,42 +390,42 @@ contract NFATFacilityTest is Test {
 
         address recipient = address(0xBEEF);
         vm.prank(admin);
-        facility.emergencyWithdrawDeposit(depositor, recipient, withdraw);
+        facility.rescueDeposit(depositor, recipient, withdraw);
 
         assertEq(facility.deposits(depositor), deposit - withdraw);
         assertEq(asset.balanceOf(recipient), withdraw);
     }
 
-    function testEmergencyWithdrawDepositRequiresAdmin() public {
+    function testRescueDepositRequiresAdmin() public {
         bytes32 role = facility.DEFAULT_ADMIN_ROLE();
         vm.prank(address(0xF00D));
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
         );
-        facility.emergencyWithdrawDeposit(depositor, address(0xBEEF), 1);
+        facility.rescueDeposit(depositor, address(0xBEEF), 1);
     }
 
-    function testEmergencyWithdrawDepositInsufficientReverts() public {
+    function testRescueDepositInsufficientReverts() public {
         vm.prank(admin);
         vm.expectRevert("NFATFacility/insufficient-pending");
-        facility.emergencyWithdrawDeposit(depositor, address(0xBEEF), 1);
+        facility.rescueDeposit(depositor, address(0xBEEF), 1);
     }
 
-    function testEmergencyWithdrawDepositToZeroReverts() public {
+    function testRescueDepositToZeroReverts() public {
         vm.prank(admin);
         vm.expectRevert("NFATFacility/to-zero-address");
-        facility.emergencyWithdrawDeposit(depositor, address(0), 1);
+        facility.rescueDeposit(depositor, address(0), 1);
     }
 
-    function testEmergencyWithdrawDepositZeroAmountReverts() public {
+    function testRescueDepositZeroAmountReverts() public {
         vm.prank(admin);
         vm.expectRevert("NFATFacility/amount-zero");
-        facility.emergencyWithdrawDeposit(depositor, address(0xBEEF), 0);
+        facility.rescueDeposit(depositor, address(0xBEEF), 0);
     }
 
-    // ── emergencyWithdrawFunding ─────────────────────────────────────────
+    // ── rescueFunding ───────────────────────────────────────────────────
 
-    function testEmergencyWithdrawFunding() public {
+    function testRescueFunding() public {
         vm.prank(operator);
         facility.issue(depositor, 0, 1);
 
@@ -434,13 +438,13 @@ contract NFATFacilityTest is Test {
 
         address recipient = address(0xBEEF);
         vm.prank(admin);
-        facility.emergencyWithdrawFunding(1, recipient, 40e18);
+        facility.rescueFunding(1, recipient, 40e18);
 
         assertEq(facility.claimable(1), 60e18);
         assertEq(asset.balanceOf(recipient), 40e18);
     }
 
-    function testFuzz_EmergencyWithdrawFunding(uint96 fundAmt, uint96 withdrawAmt) public {
+    function testFuzz_RescueFunding(uint96 fundAmt, uint96 withdrawAmt) public {
         uint256 fund_ = bound(uint256(fundAmt), 1, 1_000_000e18);
         uint256 withdraw_ = bound(uint256(withdrawAmt), 1, fund_);
 
@@ -455,41 +459,149 @@ contract NFATFacilityTest is Test {
 
         address recipient = address(0xBEEF);
         vm.prank(admin);
-        facility.emergencyWithdrawFunding(1, recipient, withdraw_);
+        facility.rescueFunding(1, recipient, withdraw_);
 
         assertEq(facility.claimable(1), fund_ - withdraw_);
         assertEq(asset.balanceOf(recipient), withdraw_);
     }
 
-    function testEmergencyWithdrawFundingRequiresAdmin() public {
+    function testRescueFundingRequiresAdmin() public {
         bytes32 role = facility.DEFAULT_ADMIN_ROLE();
         vm.prank(address(0xF00D));
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
         );
-        facility.emergencyWithdrawFunding(1, address(0xBEEF), 1);
+        facility.rescueFunding(1, address(0xBEEF), 1);
     }
 
-    function testEmergencyWithdrawFundingInsufficientReverts() public {
+    function testRescueFundingInsufficientReverts() public {
         vm.prank(operator);
         facility.issue(depositor, 0, 1);
 
         vm.prank(admin);
         vm.expectRevert("NFATFacility/insufficient-claimable");
-        facility.emergencyWithdrawFunding(1, address(0xBEEF), 1);
+        facility.rescueFunding(1, address(0xBEEF), 1);
     }
 
-    function testEmergencyWithdrawFundingToZeroReverts() public {
+    function testRescueFundingToZeroReverts() public {
         vm.prank(admin);
         vm.expectRevert("NFATFacility/to-zero-address");
-        facility.emergencyWithdrawFunding(1, address(0), 1);
+        facility.rescueFunding(1, address(0), 1);
     }
 
-    function testEmergencyWithdrawFundingZeroAmountReverts() public {
+    function testRescueFundingZeroAmountReverts() public {
         vm.prank(admin);
         vm.expectRevert("NFATFacility/amount-zero");
-        facility.emergencyWithdrawFunding(1, address(0xBEEF), 0);
+        facility.rescueFunding(1, address(0xBEEF), 0);
     }
+
+    // ── pause / unpause ───────────────────────────────────────────────────
+
+    function testPauseRequiresPauseRole() public {
+        bytes32 role = facility.ROLE_PAUSE();
+        vm.prank(address(0xF00D));
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
+        );
+        facility.pause();
+    }
+
+    function testUnpauseRequiresAdmin() public {
+        vm.prank(admin);
+        facility.pause();
+
+        bytes32 role = facility.DEFAULT_ADMIN_ROLE();
+        vm.prank(address(0xF00D));
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
+        );
+        facility.unpause();
+    }
+
+    function testPauseBlocksDeposit() public {
+        vm.prank(admin);
+        facility.pause();
+
+        asset.mint(depositor, 1e18);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), 1e18);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        facility.deposit(1e18);
+        vm.stopPrank();
+    }
+
+    function testPauseBlocksIssue() public {
+        vm.prank(admin);
+        facility.pause();
+
+        vm.prank(operator);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        facility.issue(depositor, 0, 1);
+    }
+
+    function testPauseBlocksFund() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 42);
+
+        vm.prank(admin);
+        facility.pause();
+
+        asset.mint(depositor, 1e18);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), 1e18);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        facility.fund(42, 1e18);
+        vm.stopPrank();
+    }
+
+    function testPauseBlocksClaim() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 42);
+
+        asset.mint(address(this), 1e18);
+        asset.approve(address(facility), 1e18);
+        facility.fund(42, 1e18);
+
+        vm.prank(admin);
+        facility.pause();
+
+        vm.prank(depositor);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        facility.claim(42, 1e18);
+    }
+
+    function testPauseAllowsWithdraw() public {
+        asset.mint(depositor, 1e18);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), 1e18);
+        facility.deposit(1e18);
+        vm.stopPrank();
+
+        vm.prank(admin);
+        facility.pause();
+
+        vm.prank(depositor);
+        facility.withdraw(1e18);
+        assertEq(asset.balanceOf(depositor), 1e18);
+    }
+
+    function testUnpauseResumesOperations() public {
+        vm.prank(admin);
+        facility.pause();
+
+        vm.prank(admin);
+        facility.unpause();
+
+        asset.mint(depositor, 1e18);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), 1e18);
+        facility.deposit(1e18);
+        vm.stopPrank();
+
+        assertEq(facility.deposits(depositor), 1e18);
+    }
+
+    // ── setRecipient (fuzz) ─────────────────────────────────────────────
 
     function testFuzz_SetRecipientIssueUsesNewRecipient(uint96 depositAmount) public {
         uint256 deposit = bound(uint256(depositAmount), 1, 1_000_000e18);
