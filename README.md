@@ -143,8 +143,9 @@ Requirements organized by lifecycle phase.
 | # | Requirement |
 |---|-------------|
 | A-1 | Deposits and transfers are optionally gated by an on-chain Identity Network |
-| A-2 | `DEFAULT_ADMIN_ROLE` (Halo Proxy) manages roles, recipient address, identity network, and emergency recovery |
+| A-2 | `DEFAULT_ADMIN_ROLE` (Halo Proxy) manages roles, recipient address, identity network, unpausing, and rescue |
 | A-3 | `ROLE_OPERATOR` (NFAT Beacon) issues NFATs |
+| A-4 | `ROLE_PAUSE` can freeze the facility — either to retire it or in response to issues |
 
 ### 7. Admin & Emergency
 
@@ -152,7 +153,7 @@ Requirements organized by lifecycle phase.
 |---|-------------|
 | E-1 | Admin may recover any ERC-20 token held by the facility in case of operational failures |
 | E-2 | Admin may update the recipient address |
-| E-3 | Granular pause controls - in case of emergencies or to retire a facility |
+| E-3 | `ROLE_PAUSE` can freeze the facility (pauses `deposit`, `issue`, `fund`, `claim`); only admin can unpause |
 
 ## Contracts
 
@@ -160,7 +161,7 @@ Requirements organized by lifecycle phase.
 
 **File:** `src/NFATFacility.sol`
 
-**Inherits:** ERC721, AccessControl, ReentrancyGuard
+**Inherits:** ERC721, AccessControl, Pausable, ReentrancyGuard
 
 The core contract. Manages the deposit queue, NFAT issuance, funding (NFAT payments), and claims all in a single contract.
 
@@ -189,8 +190,9 @@ struct NFATData {
 
 | Role | Actor | Purpose |
 |------|-------|---------|
-| `DEFAULT_ADMIN_ROLE` | HaloProxy | Role administration, recipient updates, identity network management, emergency recovery. Held by Halo Proxy which can make updates through spells. |
+| `DEFAULT_ADMIN_ROLE` | HaloProxy | Role administration, recipient updates, identity network management, rescue, unpausing. Held by Halo Proxy which can make updates through spells. |
 | `ROLE_OPERATOR` | Halo's GovOps/NFAT Beacon | Pulls funds and issues NFATs |
+| `ROLE_PAUSE` | Configurable | Freezes the facility - either to retire it or in response to issues. Pauses `deposit`, `issue`, `fund`, `claim`. `withdraw` is intentionally exempt so depositors can always exit. Only `DEFAULT_ADMIN_ROLE` can unpause. |
 
 #### Constructor
 
@@ -215,7 +217,7 @@ Queues `asset` (e.g. sUSDS) into the facility. Caller must be a member of the id
 
 | | |
 |---|---|
-| Access | Any (identity-gated) |
+| Access | Any (identity-gated), `whenNotPaused` |
 | Guards | `amount > 0`, `_requireMember(msg.sender)` |
 | Effects | `deposits[msg.sender] += amount` |
 | Interactions | `asset.safeTransferFrom(msg.sender, this, amount)` |
@@ -239,7 +241,7 @@ Claims funds from a depositor's queue and mints an NFAT. `amount` may be zero to
 
 | | |
 |---|---|
-| Access | `ROLE_OPERATOR` |
+| Access | `ROLE_OPERATOR`, `whenNotPaused` |
 | Guards | `depositor != address(0)`, if `amount > 0`: `deposits[depositor] >= amount` |
 | Effects | `deposits[depositor] -= amount` (if > 0), `_mint(depositor, tokenId)`, `nfatData[tokenId]` set |
 | Interactions | `asset.safeTransfer(recipient, amount)` (if > 0) |
@@ -251,7 +253,7 @@ Funds an NFAT for the holder to claim. Anyone can call (caller provides tokens).
 
 | | |
 |---|---|
-| Access | Any |
+| Access | Any, `whenNotPaused` |
 | Guards | `amount > 0`, token must exist |
 | Effects | `claimable[tokenId] += amount` |
 | Interactions | `asset.safeTransferFrom(msg.sender, this, amount)` |
@@ -263,26 +265,26 @@ Claims funded amounts for an NFAT. The caller specifies the amount to claim. The
 
 | | |
 |---|---|
-| Access | NFAT owner only |
+| Access | NFAT owner only, `whenNotPaused` |
 | Guards | `ownerOf(tokenId) == msg.sender`, `amount > 0`, `claimable[tokenId] >= amount` |
 | Effects | `claimable[tokenId] -= amount` |
 | Interactions | `asset.safeTransfer(msg.sender, amount)` |
 | Event | `Claimed(tokenId, claimer, amount)` |
 
-**`emergencyWithdraw(address token, address to, uint256 amount)`**
+**`rescue(address token, address to, uint256 amount)`**
 
-Emergency recovery of any ERC-20 token held by the facility. Does not adjust internal accounting - use `emergencyWithdrawDeposit` or `emergencyWithdrawFunding` for tracked balances.
+Rescue any ERC-20 token held by the facility. Does not adjust internal accounting - use `rescueDeposit` or `rescueFunding` for tracked balances.
 
 | | |
 |---|---|
 | Access | `DEFAULT_ADMIN_ROLE` |
 | Guards | `to != address(0)` |
 | Interactions | `IERC20(token).safeTransfer(to, amount)` |
-| Event | `EmergencyWithdraw(token, to, amount)` |
+| Event | `Rescued(token, to, amount)` |
 
-**`emergencyWithdrawDeposit(address depositor, address to, uint256 amount)`**
+**`rescueDeposit(address depositor, address to, uint256 amount)`**
 
-Emergency withdrawal from a depositor's queued balance with proper accounting.
+Rescue from a depositor's queued balance with proper accounting.
 
 | | |
 |---|---|
@@ -290,11 +292,11 @@ Emergency withdrawal from a depositor's queued balance with proper accounting.
 | Guards | `to != address(0)`, `amount > 0`, `deposits[depositor] >= amount` |
 | Effects | `deposits[depositor] -= amount` |
 | Interactions | `asset.safeTransfer(to, amount)` |
-| Event | `EmergencyWithdraw(address(asset), to, amount)` |
+| Event | `RescuedDeposit(depositor, to, amount)` |
 
-**`emergencyWithdrawFunding(uint256 tokenId, address to, uint256 amount)`**
+**`rescueFunding(uint256 tokenId, address to, uint256 amount)`**
 
-Emergency withdrawal from an NFAT's claimable balance with proper accounting.
+Rescue from an NFAT's claimable balance with proper accounting.
 
 | | |
 |---|---|
@@ -302,7 +304,23 @@ Emergency withdrawal from an NFAT's claimable balance with proper accounting.
 | Guards | `to != address(0)`, `amount > 0`, `claimable[tokenId] >= amount` |
 | Effects | `claimable[tokenId] -= amount` |
 | Interactions | `asset.safeTransfer(to, amount)` |
-| Event | `EmergencyWithdraw(address(asset), to, amount)` |
+| Event | `RescuedFunding(tokenId, to, amount)` |
+
+**`pause()`**
+
+Freezes the facility. Pauses `deposit`, `issue`, `fund`, and `claim`. `withdraw` is intentionally exempt so depositors can always exit. Can be used to retire a facility or in response to issues.
+
+| | |
+|---|---|
+| Access | `ROLE_PAUSE` |
+
+**`unpause()`**
+
+Resumes facility operations after a pause.
+
+| | |
+|---|---|
+| Access | `DEFAULT_ADMIN_ROLE` |
 
 **`setRecipient(address recipient_)`**
 
@@ -342,7 +360,9 @@ event Funded(uint256 indexed tokenId, address indexed funder, uint256 amount);
 event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
 event RecipientUpdated(address indexed recipient);
 event IdentityNetworkUpdated(address indexed manager);
-event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
+event Rescued(address indexed token, address indexed to, uint256 amount);
+event RescuedDeposit(address indexed depositor, address indexed to, uint256 amount);
+event RescuedFunding(uint256 indexed tokenId, address indexed to, uint256 amount);
 ```
 
 ## Identity Network
@@ -367,26 +387,36 @@ interface IIdentityNetwork {
 - Pass `address(0)` to disable all membership checks
 - Identity Network is managed externally (e.g., by Halos)
 
-## Emergency Recovery
+## Rescue & Pausing
 
-The facility holds two types of tracked balances - `deposits[address]` (queued pre-issuance) and `claimable[tokenId]` (funded NFAT balances) - plus potentially untracked surplus (e.g. tokens sent directly to the contract). Three functions cover the full recovery surface.
+### Pause
 
-### Emergency: Admin recovery with accounting
+The `ROLE_PAUSE` holder can freeze the facility by calling `pause()`. This pauses `deposit`, `issue`, `fund`, and `claim`. `withdraw` is intentionally exempt - depositors can always exit. Only `DEFAULT_ADMIN_ROLE` can call `unpause()`.
+
+Use cases:
+- **Retire a facility** - pause permanently once all claims are settled
+- **Incident response** - freeze operations while investigating an issue
+
+### Rescue
+
+The facility holds two types of tracked balances — `deposits[address]` (queued pre-issuance) and `claimable[tokenId]` (funded NFAT balances) — plus potentially untracked surplus (e.g. tokens sent directly to the contract). Three rescue functions cover the full recovery surface.
+
+#### Rescue with accounting
 
 | Scenario | Function | Accounting |
 |----------|----------|------------|
-| Need to recover queued deposits on behalf of a depositor | `emergencyWithdrawDeposit()` | Decrements `deposits[depositor]` |
-| Need to recover funded balance from an NFAT (e.g. wrong NFAT or wrong amount) | `emergencyWithdrawFunding()` | Decrements `claimable[tokenId]` |
+| Need to recover queued deposits on behalf of a depositor | `rescueDeposit()` | Decrements `deposits[depositor]` |
+| Need to recover funded balance from an NFAT (e.g. wrong NFAT or wrong amount) | `rescueFunding()` | Decrements `claimable[tokenId]` |
 
 These are admin-only (`DEFAULT_ADMIN_ROLE` / Halo Proxy via spell). They adjust internal accounting so the invariant `asset.balanceOf(facility) >= sum(deposits) + sum(claimable)` is preserved.
 
-### Last resort: Generic extraction
+#### Last resort: Generic rescue
 
 | Scenario | Function | Accounting |
 |----------|----------|------------|
-| Recover any ERC-20 (wrong token sent, untracked surplus) | `emergencyWithdraw()` | None |
+| Recover any ERC-20 (wrong token sent, untracked surplus) | `rescue()` | None |
 
-The generic `emergencyWithdraw()` does not adjust `deposits` or `claimable`. Using it on the facility's own asset will break the accounting invariant - it exists for cases where no tracked balance corresponds to the tokens being recovered. Prefer the accounting-aware functions above when possible.
+The generic `rescue()` does not adjust `deposits` or `claimable`. Using it on the facility's own asset will break the accounting invariant — it exists for cases where no tracked balance corresponds to the tokens being recovered. Prefer the accounting-aware functions above when possible.
 
 ## Deviations from Laniakea Spec
 
@@ -429,7 +459,7 @@ This implementation diverges from the [canonical NFAT specification](https://git
 ### 1. Is the `NFATData` struct needed, and if so, what should it include? (`NFATFacility.sol:17`)
    Currently stores `mintedAt`, `depositor`, and `principal` on-chain at issuance. All of this data is already available from event logs (`Issued`). If no on-chain consumer needs to read these fields, the struct adds storage cost without clear benefit. If the struct is kept, research is needed if more metadata is needed from a business or operational POV.
 
-### 2. Should `emergencyWithdraw`'s `to` address be immutable? (`NFATFacility.sol:132`)
+### 2. Should `rescue`'s `to` address be immutable?
    Setting the recovery destination in the constructor (e.g., to `DsPauseProxy` or similar) would reduce trust assumptions on the admin. Tradeoff: less flexibility in recovery scenarios.
    Currently the Halo Proxy can recover to any address via spell.
 
@@ -441,7 +471,7 @@ This implementation diverges from the [canonical NFAT specification](https://git
    In the current Laniakea spec a factory deploys identical `NFATFacility` contracts. Future needs (e.g., specific legal jurisdictions, custom restrictions) may require variants. The interface (`deposit`, `issue`, `fund`, `claim`) should remain stable even if implementations diverge.
 
 ### 5. Should the NFAT facility support granular pause controls on functions?
-   Not yet implemented in the POC. Could serve as a "retire" mechanism for deprecated facilities. The PAU's rate limits provide some control over outflows, but per-function pausing on the facility would add finer-grained emergency response.
+   In the POC `ROLE_PAUSE` can freeze the facility (`deposit`, `issue`, `fund`, `claim`). `withdraw` is exempt. Only `DEFAULT_ADMIN_ROLE` can unpause.
 
 ### 6. Should funders be able to self-service retract funding (`defund()`)?
-   Currently, retracting funded amounts requires admin intervention via `emergencyWithdrawFunding()`, which means a spell is needed to correct any funding mistake. An alternative is a self-service `defund()` function that lets the original funder reclaim their contribution directly. This would require per-funder accounting (`claimable[tokenId][funder]` instead of flat `claimable[tokenId]`), which in turn means `claim()` must specify which funder to draw from. The tradeoff: self-service defund avoids the spell overhead for operational corrections (e.g. Halo funds wrong NFAT or wrong amount), but adds complexity to the claim flow and mapping structure. An implementation of defund is available on the `feat/defund` branch.
+   Currently, retracting funded amounts requires admin intervention via `rescueFunding()`, which means a spell is needed to correct any funding mistake. An alternative is a self-service `defund()` function that lets the original funder reclaim their contribution directly. This would require per-funder accounting (`claimable[tokenId][funder]` instead of flat `claimable[tokenId]`), which in turn means `claim()` must specify which funder to draw from. The tradeoff: self-service defund avoids the spell overhead for operational corrections (e.g. Halo funds wrong NFAT or wrong amount), but adds complexity to the claim flow and mapping structure. An implementation of defund is available on the `feat/defund` branch.
