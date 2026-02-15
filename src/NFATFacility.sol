@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
-import {AccessControl} from "openzeppelin-contracts/contracts/access/AccessControl.sol";
 import {ERC721} from "openzeppelin-contracts/contracts/token/ERC721/ERC721.sol";
-import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
-import {IIdentityNetwork} from "./interfaces/IIdentityNetwork.sol";
 
-contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
-    using SafeERC20 for IERC20;
+interface GemLike {
+    function transfer(address, uint256) external returns (bool);
+    function transferFrom(address, address, uint256) external returns (bool);
+}
 
-    bytes32 public constant ROLE_OPERATOR = keccak256("OPERATOR");
+interface IdentityNetworkLike {
+    function isMember(address account) external view returns (bool);
+}
+
+contract NFATFacility is ERC721 {
+    // --- Structs ---
 
     struct NFATData {
         uint48 mintedAt;
@@ -19,172 +21,82 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         uint256 principal;
     }
 
-    IERC20 public immutable asset;
-    address public recipient; // NFAT PAU (ALM Proxy)
+    // --- Storage variables ---
 
-    IIdentityNetwork public identityNetwork;
+    mapping(address usr => uint256 allowed) public wards;
+    mapping(address usr => uint256 allowed) public can;
+
+    uint256 public stopped;
+
+    address public recipient;
+    IdentityNetworkLike public identityNetwork;
 
     mapping(address => uint256) public deposits;
     mapping(uint256 => uint256) public claimable;
     mapping(uint256 => NFATData) public nfatData;
 
-    event FacilityCreated(address indexed asset, address indexed recipient, address indexed admin, address operator);
-    event Deposited(address indexed depositor, uint256 amount);
-    event Withdrawn(address indexed depositor, uint256 amount);
-    event Issued(address indexed depositor, uint256 amount, uint256 indexed tokenId);
-    event Funded(uint256 indexed tokenId, address indexed funder, uint256 amount);
-    event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
-    event RecipientUpdated(address indexed recipient);
-    event IdentityNetworkUpdated(address indexed manager);
-    event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
+    // --- Immutables ---
 
-    constructor(
-        string memory name_,
-        address admin,
-        address asset_,
-        address recipient_,
-        address identityNetwork_,
-        address operator
-    ) ERC721(string.concat("NFAT-", name_), string.concat("NFAT-", name_)) {
-        require(admin != address(0), "NFATFacility/admin-zero-address");
+    GemLike public immutable asset;
+
+    // --- Events ---
+
+    event Rely(address indexed usr);
+    event Deny(address indexed usr);
+    event Hope(address indexed usr);
+    event Nope(address indexed usr);
+    event Stop();
+    event Start();
+    event Deposit(address indexed depositor, uint256 amount);
+    event Withdraw(address indexed depositor, uint256 amount);
+    event Issue(address indexed depositor, uint256 amount, uint256 indexed tokenId);
+    event Fund(uint256 indexed tokenId, address indexed funder, uint256 amount);
+    event Claim(uint256 indexed tokenId, address indexed claimer, uint256 amount);
+    event SetRecipient(address indexed recipient);
+    event SetIdentityNetwork(address indexed identityNetwork);
+    event Rescue(address indexed token, address indexed to, uint256 amount);
+    event RescueDeposit(address indexed depositor, address indexed to, uint256 amount);
+    event RescueFunding(uint256 indexed tokenId, address indexed to, uint256 amount);
+
+    // --- Modifiers ---
+
+    modifier auth() {
+        require(wards[msg.sender] == 1, "NFATFacility/not-authorized");
+        _;
+    }
+
+    modifier operatorAuth() {
+        require(can[msg.sender] == 1 || wards[msg.sender] == 1, "NFATFacility/not-operator");
+        _;
+    }
+
+    modifier stoppable() {
+        require(stopped == 0, "NFATFacility/stopped");
+        _;
+    }
+
+    // --- Constructor ---
+
+    constructor(string memory name_, address asset_, address recipient_, address identityNetwork_, address operator_)
+        ERC721(string.concat("NFAT-", name_), string.concat("NFAT-", name_))
+    {
         require(asset_ != address(0), "NFATFacility/asset-zero-address");
         require(recipient_ != address(0), "NFATFacility/recipient-zero-address");
-        require(operator != address(0), "NFATFacility/operator-zero-address");
 
-        asset = IERC20(asset_);
+        asset = GemLike(asset_);
         recipient = recipient_;
-        identityNetwork = IIdentityNetwork(identityNetwork_);
+        identityNetwork = IdentityNetworkLike(identityNetwork_);
 
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ROLE_OPERATOR, operator);
+        wards[msg.sender] = 1;
+        emit Rely(msg.sender);
 
-        emit FacilityCreated(asset_, recipient_, admin, operator);
-    }
-
-    /// @notice Deposit asset into the facility queue.
-    function deposit(uint256 amount) external nonReentrant {
-        require(amount > 0, "NFATFacility/amount-zero");
-        _requireMember(msg.sender);
-
-        asset.safeTransferFrom(msg.sender, address(this), amount);
-        deposits[msg.sender] += amount;
-
-        emit Deposited(msg.sender, amount);
-    }
-
-    /// @notice Withdraw queued assets before they are claimed.
-    function withdraw(uint256 amount) external nonReentrant {
-        require(amount > 0, "NFATFacility/amount-zero");
-
-        uint256 pending = deposits[msg.sender];
-        require(pending >= amount, "NFATFacility/insufficient-pending");
-        deposits[msg.sender] = pending - amount;
-
-        asset.safeTransfer(msg.sender, amount);
-        emit Withdrawn(msg.sender, amount);
-    }
-
-    /// @notice Issue an NFAT: claim funds from a depositor's queue and mint an NFAT.
-    /// @dev Only callable by the facility operator. Amount may be zero.
-    function issue(address depositor, uint256 amount, uint256 tokenId) external nonReentrant onlyRole(ROLE_OPERATOR) {
-        require(depositor != address(0), "NFATFacility/depositor-zero-address");
-
-        if (amount > 0) {
-            uint256 pending = deposits[depositor];
-            require(pending >= amount, "NFATFacility/insufficient-pending");
-            deposits[depositor] = pending - amount;
-            asset.safeTransfer(recipient, amount);
+        if (operator_ != address(0)) {
+            can[operator_] = 1;
+            emit Hope(operator_);
         }
-
-        _mint(depositor, tokenId);
-        nfatData[tokenId] = NFATData(uint48(block.timestamp), depositor, amount);
-
-        emit Issued(depositor, amount, tokenId);
     }
 
-    /// @notice Fund an NFAT for the holder to claim.
-    /// @dev Payments accumulate until the holder claims.
-    function fund(uint256 tokenId, uint256 amount) external nonReentrant {
-        require(amount > 0, "NFATFacility/amount-zero");
-        require(_ownerOf(tokenId) != address(0), "NFATFacility/token-missing");
-
-        asset.safeTransferFrom(msg.sender, address(this), amount);
-        claimable[tokenId] += amount;
-
-        emit Funded(tokenId, msg.sender, amount);
-    }
-
-    /// @notice Claim funded amounts for an NFAT.
-    function claim(uint256 tokenId, uint256 amount) external nonReentrant {
-        require(ownerOf(tokenId) == msg.sender, "NFATFacility/not-owner");
-        require(amount > 0, "NFATFacility/amount-zero");
-
-        uint256 available = claimable[tokenId];
-        require(available >= amount, "NFATFacility/insufficient-claimable");
-        claimable[tokenId] = available - amount;
-
-        asset.safeTransfer(msg.sender, amount);
-
-        emit Claimed(tokenId, msg.sender, amount);
-    }
-
-    /// @notice Emergency token recovery.
-    function emergencyWithdraw(address token, address to, uint256 amount)
-        external
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        require(to != address(0), "NFATFacility/to-zero-address");
-        IERC20(token).safeTransfer(to, amount);
-        emit EmergencyWithdraw(token, to, amount);
-    }
-
-    /// @notice Emergency withdrawal from deposit queue with accounting.
-    function emergencyWithdrawDeposit(address depositor, address to, uint256 amount)
-        external
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        require(to != address(0), "NFATFacility/to-zero-address");
-        require(amount > 0, "NFATFacility/amount-zero");
-
-        uint256 pending = deposits[depositor];
-        require(pending >= amount, "NFATFacility/insufficient-pending");
-        deposits[depositor] = pending - amount;
-
-        asset.safeTransfer(to, amount);
-        emit EmergencyWithdraw(address(asset), to, amount);
-    }
-
-    /// @notice Emergency withdrawal from claimable balance with accounting.
-    function emergencyWithdrawFunding(uint256 tokenId, address to, uint256 amount)
-        external
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        require(to != address(0), "NFATFacility/to-zero-address");
-        require(amount > 0, "NFATFacility/amount-zero");
-
-        uint256 available = claimable[tokenId];
-        require(available >= amount, "NFATFacility/insufficient-claimable");
-        claimable[tokenId] = available - amount;
-
-        asset.safeTransfer(to, amount);
-        emit EmergencyWithdraw(address(asset), to, amount);
-    }
-
-    /// @notice Update the recipient address (NFAT PAU (ALMProxy)).
-    function setRecipient(address recipient_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(recipient_ != address(0), "NFATFacility/recipient-zero-address");
-        recipient = recipient_;
-        emit RecipientUpdated(recipient_);
-    }
-
-    /// @notice Set or clear the identity network. Pass address(0) to disable identity checks.
-    function setIdentityNetwork(address manager) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        identityNetwork = IIdentityNetwork(manager);
-        emit IdentityNetworkUpdated(manager);
-    }
+    // --- Internal functions ---
 
     function _requireMember(address account) internal view {
         if (address(identityNetwork) == address(0)) {
@@ -193,14 +105,155 @@ contract NFATFacility is ERC721, AccessControl, ReentrancyGuard {
         require(identityNetwork.isMember(account), "NFATFacility/not-member");
     }
 
-    function _update(address to, uint256 tokenId, address auth) internal override returns (address from) {
+    function _update(address to, uint256 tokenId, address authAddr) internal override returns (address from) {
         if (to != address(0)) {
             _requireMember(to);
         }
-        return super._update(to, tokenId, auth);
+        return super._update(to, tokenId, authAddr);
     }
 
-    function supportsInterface(bytes4 interfaceId) public view override(ERC721, AccessControl) returns (bool) {
-        return super.supportsInterface(interfaceId);
+    // --- Admin functions ---
+
+    function rely(address usr) external auth {
+        wards[usr] = 1;
+        emit Rely(usr);
+    }
+
+    function deny(address usr) external auth {
+        wards[usr] = 0;
+        emit Deny(usr);
+    }
+
+    function hope(address usr) external auth {
+        can[usr] = 1;
+        emit Hope(usr);
+    }
+
+    function nope(address usr) external auth {
+        can[usr] = 0;
+        emit Nope(usr);
+    }
+
+    function stop() external auth {
+        stopped = 1;
+        emit Stop();
+    }
+
+    function start() external auth {
+        stopped = 0;
+        emit Start();
+    }
+
+    function setRecipient(address recipient_) external auth {
+        require(recipient_ != address(0), "NFATFacility/recipient-zero-address");
+        recipient = recipient_;
+        emit SetRecipient(recipient_);
+    }
+
+    function setIdentityNetwork(address identityNetwork_) external auth {
+        identityNetwork = IdentityNetworkLike(identityNetwork_);
+        emit SetIdentityNetwork(identityNetwork_);
+    }
+
+    function rescue(address token, address to, uint256 amount) external auth {
+        require(to != address(0), "NFATFacility/to-zero-address");
+        GemLike(token).transfer(to, amount);
+        emit Rescue(token, to, amount);
+    }
+
+    function rescueDeposit(address depositor, address to, uint256 amount) external auth {
+        require(to != address(0), "NFATFacility/to-zero-address");
+        require(amount > 0, "NFATFacility/amount-zero");
+
+        uint256 pending = deposits[depositor];
+        require(pending >= amount, "NFATFacility/insufficient-pending");
+        deposits[depositor] = pending - amount;
+
+        asset.transfer(to, amount);
+        emit RescueDeposit(depositor, to, amount);
+    }
+
+    function rescueFunding(uint256 tokenId, address to, uint256 amount) external auth {
+        require(to != address(0), "NFATFacility/to-zero-address");
+        require(amount > 0, "NFATFacility/amount-zero");
+
+        uint256 available = claimable[tokenId];
+        require(available >= amount, "NFATFacility/insufficient-claimable");
+        claimable[tokenId] = available - amount;
+
+        asset.transfer(to, amount);
+        emit RescueFunding(tokenId, to, amount);
+    }
+
+    // --- Operator functions ---
+
+    // Note: amount may be zero to mint an NFAT without claiming from the deposit queue.
+    function issue(address depositor, uint256 amount, uint256 tokenId) external operatorAuth stoppable {
+        require(depositor != address(0), "NFATFacility/depositor-zero-address");
+
+        if (amount > 0) {
+            uint256 pending = deposits[depositor];
+            require(pending >= amount, "NFATFacility/insufficient-pending");
+            deposits[depositor] = pending - amount;
+        }
+
+        _mint(depositor, tokenId);
+        nfatData[tokenId] = NFATData(uint48(block.timestamp), depositor, amount);
+
+        // Note: transfer after effects to maintain CEI ordering.
+        if (amount > 0) {
+            asset.transfer(recipient, amount);
+        }
+
+        emit Issue(depositor, amount, tokenId);
+    }
+
+    // --- Public functions ---
+
+    function deposit(uint256 amount) external stoppable {
+        require(amount > 0, "NFATFacility/amount-zero");
+        _requireMember(msg.sender);
+
+        deposits[msg.sender] += amount;
+
+        asset.transferFrom(msg.sender, address(this), amount);
+
+        emit Deposit(msg.sender, amount);
+    }
+
+    function withdraw(uint256 amount) external {
+        require(amount > 0, "NFATFacility/amount-zero");
+
+        uint256 pending = deposits[msg.sender];
+        require(pending >= amount, "NFATFacility/insufficient-pending");
+        deposits[msg.sender] = pending - amount;
+
+        asset.transfer(msg.sender, amount);
+
+        emit Withdraw(msg.sender, amount);
+    }
+
+    function fund(uint256 tokenId, uint256 amount) external stoppable {
+        require(amount > 0, "NFATFacility/amount-zero");
+        require(_ownerOf(tokenId) != address(0), "NFATFacility/token-missing");
+
+        claimable[tokenId] += amount;
+
+        asset.transferFrom(msg.sender, address(this), amount);
+
+        emit Fund(tokenId, msg.sender, amount);
+    }
+
+    function claim(uint256 tokenId, uint256 amount) external stoppable {
+        require(ownerOf(tokenId) == msg.sender, "NFATFacility/not-owner");
+        require(amount > 0, "NFATFacility/amount-zero");
+
+        uint256 available = claimable[tokenId];
+        require(available >= amount, "NFATFacility/insufficient-claimable");
+        claimable[tokenId] = available - amount;
+
+        asset.transfer(msg.sender, amount);
+
+        emit Claim(tokenId, msg.sender, amount);
     }
 }

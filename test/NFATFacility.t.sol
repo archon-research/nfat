@@ -4,7 +4,6 @@ pragma solidity ^0.8.24;
 import "forge-std/Test.sol";
 
 import {ERC20} from "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
-import {IAccessControl} from "openzeppelin-contracts/contracts/access/IAccessControl.sol";
 import {IERC721} from "openzeppelin-contracts/contracts/token/ERC721/IERC721.sol";
 import {IERC721Metadata} from "openzeppelin-contracts/contracts/token/ERC721/extensions/IERC721Metadata.sol";
 import {NFATFacility} from "../src/NFATFacility.sol";
@@ -30,7 +29,6 @@ contract NFATFacilityTest is Test {
     MockIdentityNetwork private identityNetwork;
     NFATFacility private facility;
 
-    address private admin = address(0xAD);
     address private operator = address(0xB0B);
     address private pau = address(0xD00D);
     address private depositor = address(0xE11E);
@@ -38,90 +36,169 @@ contract NFATFacilityTest is Test {
     function setUp() public {
         asset = new MockERC20();
         identityNetwork = new MockIdentityNetwork();
-        facility = new NFATFacility("Test", admin, address(asset), pau, address(0), operator);
+        facility = new NFATFacility("Test", address(asset), pau, address(0), operator);
     }
 
-    function testFuzz_DepositWithdraw(uint96 depositAmount, uint96 withdrawAmount) public {
-        uint256 deposit = bound(uint256(depositAmount), 1, 1_000_000e18);
-        uint256 withdraw = bound(uint256(withdrawAmount), 1, deposit);
+    // ── wards / hope / nope ─────────────────────────────────────────────
 
-        asset.mint(depositor, deposit);
-        vm.startPrank(depositor);
-        asset.approve(address(facility), deposit);
-        facility.deposit(deposit);
-        assertEq(facility.deposits(depositor), deposit);
-        facility.withdraw(withdraw);
-        assertEq(facility.deposits(depositor), deposit - withdraw);
-        vm.stopPrank();
-
-        assertEq(asset.balanceOf(address(facility)), deposit - withdraw);
+    function testRely() public {
+        address usr = address(0xABC);
+        facility.rely(usr);
+        assertEq(facility.wards(usr), 1);
     }
 
-    function testFuzz_Issue(uint96 depositAmount, uint96 claimAmount, uint256 tokenId) public {
-        uint256 deposit = bound(uint256(depositAmount), 1, 1_000_000e18);
-        uint256 claim = bound(uint256(claimAmount), 0, deposit);
+    function testDeny() public {
+        address usr = address(0xABC);
+        facility.rely(usr);
+        facility.deny(usr);
+        assertEq(facility.wards(usr), 0);
+    }
 
-        asset.mint(depositor, deposit);
+    function testRelyNotAuthorized() public {
+        vm.prank(address(0xF00D));
+        vm.expectRevert("NFATFacility/not-authorized");
+        facility.rely(address(0xABC));
+    }
+
+    function testDenyNotAuthorized() public {
+        vm.prank(address(0xF00D));
+        vm.expectRevert("NFATFacility/not-authorized");
+        facility.deny(address(0xABC));
+    }
+
+    function testHopeNope() public {
+        address usr = address(0xABC);
+        facility.hope(usr);
+        assertEq(facility.can(usr), 1);
+
+        facility.nope(usr);
+        assertEq(facility.can(usr), 0);
+    }
+
+    function testHopeNotAuthorized() public {
+        vm.prank(address(0xF00D));
+        vm.expectRevert("NFATFacility/not-authorized");
+        facility.hope(address(0xABC));
+    }
+
+    function testNopeNotAuthorized() public {
+        vm.prank(address(0xF00D));
+        vm.expectRevert("NFATFacility/not-authorized");
+        facility.nope(address(0xABC));
+    }
+
+    function testWardsCanCallOperatorFunctions() public {
+        facility.issue(depositor, 0, 99);
+        assertEq(facility.ownerOf(99), depositor);
+    }
+
+    // ── stop / start ────────────────────────────────────────────────────
+
+    function testStopStart() public {
+        facility.stop();
+        assertEq(facility.stopped(), 1);
+
+        facility.start();
+        assertEq(facility.stopped(), 0);
+    }
+
+    function testStopNotAuthorized() public {
+        vm.prank(address(0xF00D));
+        vm.expectRevert("NFATFacility/not-authorized");
+        facility.stop();
+    }
+
+    function testStartNotAuthorized() public {
+        vm.prank(address(0xF00D));
+        vm.expectRevert("NFATFacility/not-authorized");
+        facility.start();
+    }
+
+    function testStopBlocksDeposit() public {
+        facility.stop();
+
+        asset.mint(depositor, 1e18);
         vm.startPrank(depositor);
-        asset.approve(address(facility), deposit);
-        facility.deposit(deposit);
+        asset.approve(address(facility), 1e18);
+        vm.expectRevert("NFATFacility/stopped");
+        facility.deposit(1e18);
         vm.stopPrank();
+    }
+
+    function testStopBlocksIssue() public {
+        facility.stop();
 
         vm.prank(operator);
-        facility.issue(depositor, claim, tokenId);
-
-        assertEq(facility.deposits(depositor), deposit - claim);
-        assertEq(facility.ownerOf(tokenId), depositor);
-
-        (, address dataDepositor, uint256 principal) = facility.nfatData(tokenId);
-        assertEq(dataDepositor, depositor);
-        assertEq(principal, claim);
-
-        assertEq(asset.balanceOf(pau), claim);
+        vm.expectRevert("NFATFacility/stopped");
+        facility.issue(depositor, 0, 1);
     }
 
-    function testFuzz_ClaimKeepsNFAT(uint96 depositAmount, uint96 claimAmount, uint96 redemptionAmount) public {
-        uint256 deposit = bound(uint256(depositAmount), 1, 1_000_000e18);
-        uint256 claim = bound(uint256(claimAmount), 0, deposit);
-        uint256 redemption = bound(uint256(redemptionAmount), 1, 1_000_000e18);
+    function testStopBlocksIssueForWards() public {
+        facility.stop();
 
-        asset.mint(depositor, deposit);
-        asset.mint(operator, redemption);
+        vm.expectRevert("NFATFacility/stopped");
+        facility.issue(depositor, 0, 1);
+    }
 
-        vm.startPrank(depositor);
-        asset.approve(address(facility), deposit);
-        facility.deposit(deposit);
-        vm.stopPrank();
-
+    function testStopBlocksFund() public {
         vm.prank(operator);
-        facility.issue(depositor, claim, 7);
+        facility.issue(depositor, 0, 42);
 
-        vm.startPrank(operator);
-        asset.approve(address(facility), redemption);
-        facility.fund(7, redemption);
+        facility.stop();
+
+        asset.mint(depositor, 1e18);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), 1e18);
+        vm.expectRevert("NFATFacility/stopped");
+        facility.fund(42, 1e18);
         vm.stopPrank();
+    }
+
+    function testStopBlocksClaim() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 42);
+
+        asset.mint(address(this), 1e18);
+        asset.approve(address(facility), 1e18);
+        facility.fund(42, 1e18);
+
+        facility.stop();
 
         vm.prank(depositor);
-        facility.claim(7, redemption);
-
-        assertEq(facility.ownerOf(7), depositor);
-        assertEq(asset.balanceOf(depositor), redemption);
-        assertEq(facility.claimable(7), 0);
-        assertEq(asset.balanceOf(pau), claim);
+        vm.expectRevert("NFATFacility/stopped");
+        facility.claim(42, 1e18);
     }
 
-    function testIssueZeroAmount() public {
-        vm.prank(operator);
-        facility.issue(depositor, 0, 99);
+    function testStopAllowsWithdraw() public {
+        asset.mint(depositor, 1e18);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), 1e18);
+        facility.deposit(1e18);
+        vm.stopPrank();
 
-        assertEq(facility.ownerOf(99), depositor);
-        assertEq(facility.deposits(depositor), 0);
-        assertEq(asset.balanceOf(facility.recipient()), 0);
+        facility.stop();
 
-        (uint48 mintedAt, address dataDepositor, uint256 principal) = facility.nfatData(99);
-        assertEq(dataDepositor, depositor);
-        assertEq(principal, 0);
-        assertTrue(mintedAt > 0);
+        vm.prank(depositor);
+        facility.withdraw(1e18);
+        assertEq(asset.balanceOf(depositor), 1e18);
+    }
+
+    // ── deposit / withdraw ──────────────────────────────────────────────
+
+    function testFuzz_DepositWithdraw(uint96 depositAmount, uint96 withdrawAmount) public {
+        uint256 dep = bound(uint256(depositAmount), 1, 1_000_000e18);
+        uint256 wit = bound(uint256(withdrawAmount), 1, dep);
+
+        asset.mint(depositor, dep);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), dep);
+        facility.deposit(dep);
+        assertEq(facility.deposits(depositor), dep);
+        facility.withdraw(wit);
+        assertEq(facility.deposits(depositor), dep - wit);
+        vm.stopPrank();
+
+        assertEq(asset.balanceOf(address(facility)), dep - wit);
     }
 
     function testDepositZeroReverts() public {
@@ -142,6 +219,45 @@ contract NFATFacilityTest is Test {
         facility.withdraw(1);
     }
 
+    // ── issue ───────────────────────────────────────────────────────────
+
+    function testFuzz_Issue(uint96 depositAmount, uint96 claimAmount, uint256 tokenId) public {
+        uint256 dep = bound(uint256(depositAmount), 1, 1_000_000e18);
+        uint256 clm = bound(uint256(claimAmount), 0, dep);
+
+        asset.mint(depositor, dep);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), dep);
+        facility.deposit(dep);
+        vm.stopPrank();
+
+        vm.prank(operator);
+        facility.issue(depositor, clm, tokenId);
+
+        assertEq(facility.deposits(depositor), dep - clm);
+        assertEq(facility.ownerOf(tokenId), depositor);
+
+        (, address dataDepositor, uint256 principal) = facility.nfatData(tokenId);
+        assertEq(dataDepositor, depositor);
+        assertEq(principal, clm);
+
+        assertEq(asset.balanceOf(pau), clm);
+    }
+
+    function testIssueZeroAmount() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 99);
+
+        assertEq(facility.ownerOf(99), depositor);
+        assertEq(facility.deposits(depositor), 0);
+        assertEq(asset.balanceOf(facility.recipient()), 0);
+
+        (uint48 mintedAt, address dataDepositor, uint256 principal) = facility.nfatData(99);
+        assertEq(dataDepositor, depositor);
+        assertEq(principal, 0);
+        assertTrue(mintedAt > 0);
+    }
+
     function testIssueInsufficientReverts() public {
         vm.prank(operator);
         vm.expectRevert("NFATFacility/insufficient-pending");
@@ -154,18 +270,13 @@ contract NFATFacilityTest is Test {
         facility.issue(address(0), 0, 1);
     }
 
-    function testFundMissingTokenReverts() public {
-        vm.expectRevert("NFATFacility/token-missing");
-        facility.fund(123, 1);
+    function testOperatorRoleRequired() public {
+        vm.prank(address(0xF00D));
+        vm.expectRevert("NFATFacility/not-operator");
+        facility.issue(depositor, 0, 5);
     }
 
-    function testFundZeroReverts() public {
-        vm.prank(operator);
-        facility.issue(depositor, 0, 55);
-
-        vm.expectRevert("NFATFacility/amount-zero");
-        facility.fund(55, 0);
-    }
+    // ── fund ────────────────────────────────────────────────────────────
 
     function testFundByNonOperator() public {
         vm.prank(operator);
@@ -182,6 +293,51 @@ contract NFATFacilityTest is Test {
 
         assertEq(facility.claimable(42), amount);
         assertEq(asset.balanceOf(address(facility)), amount);
+    }
+
+    function testFundMissingTokenReverts() public {
+        vm.expectRevert("NFATFacility/token-missing");
+        facility.fund(123, 1);
+    }
+
+    function testFundZeroReverts() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 55);
+
+        vm.expectRevert("NFATFacility/amount-zero");
+        facility.fund(55, 0);
+    }
+
+    // ── claim ───────────────────────────────────────────────────────────
+
+    function testFuzz_ClaimKeepsNFAT(uint96 depositAmount, uint96 claimAmount, uint96 redemptionAmount) public {
+        uint256 dep = bound(uint256(depositAmount), 1, 1_000_000e18);
+        uint256 clm = bound(uint256(claimAmount), 0, dep);
+        uint256 redemption = bound(uint256(redemptionAmount), 1, 1_000_000e18);
+
+        asset.mint(depositor, dep);
+        asset.mint(operator, redemption);
+
+        vm.startPrank(depositor);
+        asset.approve(address(facility), dep);
+        facility.deposit(dep);
+        vm.stopPrank();
+
+        vm.prank(operator);
+        facility.issue(depositor, clm, 7);
+
+        vm.startPrank(operator);
+        asset.approve(address(facility), redemption);
+        facility.fund(7, redemption);
+        vm.stopPrank();
+
+        vm.prank(depositor);
+        facility.claim(7, redemption);
+
+        assertEq(facility.ownerOf(7), depositor);
+        assertEq(asset.balanceOf(depositor), redemption);
+        assertEq(facility.claimable(7), 0);
+        assertEq(asset.balanceOf(pau), clm);
     }
 
     function testClaimNotOwnerReverts() public {
@@ -211,9 +367,10 @@ contract NFATFacilityTest is Test {
         facility.claim(78, 1);
     }
 
+    // ── identity network ────────────────────────────────────────────────
+
     function testIdentityCheckEnforced() public {
-        NFATFacility restricted =
-            new NFATFacility("Test", admin, address(asset), pau, address(identityNetwork), operator);
+        NFATFacility restricted = new NFATFacility("Test", address(asset), pau, address(identityNetwork), operator);
 
         asset.mint(depositor, 100e18);
         vm.startPrank(depositor);
@@ -243,10 +400,8 @@ contract NFATFacilityTest is Test {
     }
 
     function testIdentityNetworkClearedAllowsAll() public {
-        NFATFacility restricted =
-            new NFATFacility("Test", admin, address(asset), pau, address(identityNetwork), operator);
+        NFATFacility restricted = new NFATFacility("Test", address(asset), pau, address(identityNetwork), operator);
 
-        vm.prank(admin);
         restricted.setIdentityNetwork(address(0));
 
         vm.prank(operator);
@@ -268,97 +423,77 @@ contract NFATFacilityTest is Test {
         assertEq(facility.ownerOf(1234), receiver);
     }
 
-    function testSetIdentityNetworkRequiresAdmin() public {
-        bytes32 role = facility.DEFAULT_ADMIN_ROLE();
+    function testSetIdentityNetworkRequiresAuth() public {
         vm.prank(address(0xF00D));
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
-        );
+        vm.expectRevert("NFATFacility/not-authorized");
         facility.setIdentityNetwork(address(identityNetwork));
     }
 
-    function testOperatorRoleRequired() public {
-        bytes32 role = facility.ROLE_OPERATOR();
-        vm.prank(address(0xF00D));
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
-        );
-        facility.issue(depositor, 0, 5);
-    }
-
-    function testEmergencyWithdrawRequiresAdmin() public {
-        bytes32 role = facility.DEFAULT_ADMIN_ROLE();
-        vm.prank(address(0xF00D));
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
-        );
-        facility.emergencyWithdraw(address(asset), address(0xBEEF), 1);
-    }
-
-    function testEmergencyWithdraw() public {
-        asset.mint(address(facility), 10e18);
-        vm.prank(admin);
-        facility.emergencyWithdraw(address(asset), depositor, 10e18);
-        assertEq(asset.balanceOf(depositor), 10e18);
-    }
-
-    function testEmergencyWithdrawToZeroReverts() public {
-        vm.prank(admin);
-        vm.expectRevert("NFATFacility/to-zero-address");
-        facility.emergencyWithdraw(address(asset), address(0), 1);
-    }
-
-    function testSupportsInterface() public {
-        assertTrue(facility.supportsInterface(type(IAccessControl).interfaceId));
-        assertTrue(facility.supportsInterface(type(IERC721).interfaceId));
-        assertTrue(facility.supportsInterface(type(IERC721Metadata).interfaceId));
-        assertFalse(facility.supportsInterface(0xffffffff));
-    }
-
-    function testConstructorRejectsZeroAddresses() public {
-        vm.expectRevert("NFATFacility/admin-zero-address");
-        new NFATFacility("Test", address(0), address(asset), pau, address(0), operator);
-
-        vm.expectRevert("NFATFacility/asset-zero-address");
-        new NFATFacility("Test", admin, address(0), pau, address(0), operator);
-
-        vm.expectRevert("NFATFacility/recipient-zero-address");
-        new NFATFacility("Test", admin, address(asset), address(0), address(0), operator);
-
-        vm.expectRevert("NFATFacility/operator-zero-address");
-        new NFATFacility("Test", admin, address(asset), pau, address(0), address(0));
-    }
+    // ── setRecipient ────────────────────────────────────────────────────
 
     function testSetRecipient() public {
         address newRecipient = address(0xBEEF);
 
         vm.expectEmit(true, false, false, false);
-        emit NFATFacility.RecipientUpdated(newRecipient);
+        emit NFATFacility.SetRecipient(newRecipient);
 
-        vm.prank(admin);
         facility.setRecipient(newRecipient);
 
         assertEq(facility.recipient(), newRecipient);
     }
 
     function testSetRecipientRoleRequired() public {
-        bytes32 role = facility.DEFAULT_ADMIN_ROLE();
         vm.prank(address(0xF00D));
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
-        );
+        vm.expectRevert("NFATFacility/not-authorized");
         facility.setRecipient(address(0xBEEF));
     }
 
     function testSetRecipientZeroAddressReverts() public {
-        vm.prank(admin);
         vm.expectRevert("NFATFacility/recipient-zero-address");
         facility.setRecipient(address(0));
     }
 
-    // ── emergencyWithdrawDeposit ─────────────────────────────────────────
+    function testFuzz_SetRecipientIssueUsesNewRecipient(uint96 depositAmount) public {
+        uint256 dep = bound(uint256(depositAmount), 1, 1_000_000e18);
+        address newRecipient = address(0xBEEF);
 
-    function testEmergencyWithdrawDeposit() public {
+        facility.setRecipient(newRecipient);
+
+        asset.mint(depositor, dep);
+        vm.startPrank(depositor);
+        asset.approve(address(facility), dep);
+        facility.deposit(dep);
+        vm.stopPrank();
+
+        vm.prank(operator);
+        facility.issue(depositor, dep, 1);
+
+        assertEq(asset.balanceOf(newRecipient), dep);
+        assertEq(asset.balanceOf(pau), 0);
+    }
+
+    // ── rescue ──────────────────────────────────────────────────────────────
+
+    function testRescueRequiresAuth() public {
+        vm.prank(address(0xF00D));
+        vm.expectRevert("NFATFacility/not-authorized");
+        facility.rescue(address(asset), address(0xBEEF), 1);
+    }
+
+    function testRescue() public {
+        asset.mint(address(facility), 10e18);
+        facility.rescue(address(asset), depositor, 10e18);
+        assertEq(asset.balanceOf(depositor), 10e18);
+    }
+
+    function testRescueToZeroReverts() public {
+        vm.expectRevert("NFATFacility/to-zero-address");
+        facility.rescue(address(asset), address(0), 1);
+    }
+
+    // ── rescueDeposit ─────────────────────────────────────────────────────
+
+    function testRescueDeposit() public {
         uint256 amount = 50e18;
         asset.mint(depositor, amount);
         vm.startPrank(depositor);
@@ -366,62 +501,54 @@ contract NFATFacilityTest is Test {
         facility.deposit(amount);
         vm.stopPrank();
 
-        address recipient = address(0xBEEF);
-        vm.prank(admin);
-        facility.emergencyWithdrawDeposit(depositor, recipient, 30e18);
+        address recv = address(0xBEEF);
+        facility.rescueDeposit(depositor, recv, 30e18);
 
         assertEq(facility.deposits(depositor), 20e18);
-        assertEq(asset.balanceOf(recipient), 30e18);
+        assertEq(asset.balanceOf(recv), 30e18);
     }
 
-    function testFuzz_EmergencyWithdrawDeposit(uint96 depositAmt, uint96 withdrawAmt) public {
-        uint256 deposit = bound(uint256(depositAmt), 1, 1_000_000e18);
-        uint256 withdraw = bound(uint256(withdrawAmt), 1, deposit);
+    function testFuzz_RescueDeposit(uint96 depositAmt, uint96 withdrawAmt) public {
+        uint256 dep = bound(uint256(depositAmt), 1, 1_000_000e18);
+        uint256 wit = bound(uint256(withdrawAmt), 1, dep);
 
-        asset.mint(depositor, deposit);
+        asset.mint(depositor, dep);
         vm.startPrank(depositor);
-        asset.approve(address(facility), deposit);
-        facility.deposit(deposit);
+        asset.approve(address(facility), dep);
+        facility.deposit(dep);
         vm.stopPrank();
 
-        address recipient = address(0xBEEF);
-        vm.prank(admin);
-        facility.emergencyWithdrawDeposit(depositor, recipient, withdraw);
+        address recv = address(0xBEEF);
+        facility.rescueDeposit(depositor, recv, wit);
 
-        assertEq(facility.deposits(depositor), deposit - withdraw);
-        assertEq(asset.balanceOf(recipient), withdraw);
+        assertEq(facility.deposits(depositor), dep - wit);
+        assertEq(asset.balanceOf(recv), wit);
     }
 
-    function testEmergencyWithdrawDepositRequiresAdmin() public {
-        bytes32 role = facility.DEFAULT_ADMIN_ROLE();
+    function testRescueDepositRequiresAuth() public {
         vm.prank(address(0xF00D));
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
-        );
-        facility.emergencyWithdrawDeposit(depositor, address(0xBEEF), 1);
+        vm.expectRevert("NFATFacility/not-authorized");
+        facility.rescueDeposit(depositor, address(0xBEEF), 1);
     }
 
-    function testEmergencyWithdrawDepositInsufficientReverts() public {
-        vm.prank(admin);
+    function testRescueDepositInsufficientReverts() public {
         vm.expectRevert("NFATFacility/insufficient-pending");
-        facility.emergencyWithdrawDeposit(depositor, address(0xBEEF), 1);
+        facility.rescueDeposit(depositor, address(0xBEEF), 1);
     }
 
-    function testEmergencyWithdrawDepositToZeroReverts() public {
-        vm.prank(admin);
+    function testRescueDepositToZeroReverts() public {
         vm.expectRevert("NFATFacility/to-zero-address");
-        facility.emergencyWithdrawDeposit(depositor, address(0), 1);
+        facility.rescueDeposit(depositor, address(0), 1);
     }
 
-    function testEmergencyWithdrawDepositZeroAmountReverts() public {
-        vm.prank(admin);
+    function testRescueDepositZeroAmountReverts() public {
         vm.expectRevert("NFATFacility/amount-zero");
-        facility.emergencyWithdrawDeposit(depositor, address(0xBEEF), 0);
+        facility.rescueDeposit(depositor, address(0xBEEF), 0);
     }
 
-    // ── emergencyWithdrawFunding ─────────────────────────────────────────
+    // ── rescueFunding ─────────────────────────────────────────────────────
 
-    function testEmergencyWithdrawFunding() public {
+    function testRescueFunding() public {
         vm.prank(operator);
         facility.issue(depositor, 0, 1);
 
@@ -432,15 +559,14 @@ contract NFATFacilityTest is Test {
         facility.fund(1, fundAmount);
         vm.stopPrank();
 
-        address recipient = address(0xBEEF);
-        vm.prank(admin);
-        facility.emergencyWithdrawFunding(1, recipient, 40e18);
+        address recv = address(0xBEEF);
+        facility.rescueFunding(1, recv, 40e18);
 
         assertEq(facility.claimable(1), 60e18);
-        assertEq(asset.balanceOf(recipient), 40e18);
+        assertEq(asset.balanceOf(recv), 40e18);
     }
 
-    function testFuzz_EmergencyWithdrawFunding(uint96 fundAmt, uint96 withdrawAmt) public {
+    function testFuzz_RescueFunding(uint96 fundAmt, uint96 withdrawAmt) public {
         uint256 fund_ = bound(uint256(fundAmt), 1, 1_000_000e18);
         uint256 withdraw_ = bound(uint256(withdrawAmt), 1, fund_);
 
@@ -453,61 +579,61 @@ contract NFATFacilityTest is Test {
         facility.fund(1, fund_);
         vm.stopPrank();
 
-        address recipient = address(0xBEEF);
-        vm.prank(admin);
-        facility.emergencyWithdrawFunding(1, recipient, withdraw_);
+        address recv = address(0xBEEF);
+        facility.rescueFunding(1, recv, withdraw_);
 
         assertEq(facility.claimable(1), fund_ - withdraw_);
-        assertEq(asset.balanceOf(recipient), withdraw_);
+        assertEq(asset.balanceOf(recv), withdraw_);
     }
 
-    function testEmergencyWithdrawFundingRequiresAdmin() public {
-        bytes32 role = facility.DEFAULT_ADMIN_ROLE();
+    function testRescueFundingRequiresAuth() public {
         vm.prank(address(0xF00D));
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
-        );
-        facility.emergencyWithdrawFunding(1, address(0xBEEF), 1);
+        vm.expectRevert("NFATFacility/not-authorized");
+        facility.rescueFunding(1, address(0xBEEF), 1);
     }
 
-    function testEmergencyWithdrawFundingInsufficientReverts() public {
+    function testRescueFundingInsufficientReverts() public {
         vm.prank(operator);
         facility.issue(depositor, 0, 1);
 
-        vm.prank(admin);
         vm.expectRevert("NFATFacility/insufficient-claimable");
-        facility.emergencyWithdrawFunding(1, address(0xBEEF), 1);
+        facility.rescueFunding(1, address(0xBEEF), 1);
     }
 
-    function testEmergencyWithdrawFundingToZeroReverts() public {
-        vm.prank(admin);
+    function testRescueFundingToZeroReverts() public {
         vm.expectRevert("NFATFacility/to-zero-address");
-        facility.emergencyWithdrawFunding(1, address(0), 1);
+        facility.rescueFunding(1, address(0), 1);
     }
 
-    function testEmergencyWithdrawFundingZeroAmountReverts() public {
-        vm.prank(admin);
+    function testRescueFundingZeroAmountReverts() public {
         vm.expectRevert("NFATFacility/amount-zero");
-        facility.emergencyWithdrawFunding(1, address(0xBEEF), 0);
+        facility.rescueFunding(1, address(0xBEEF), 0);
     }
 
-    function testFuzz_SetRecipientIssueUsesNewRecipient(uint96 depositAmount) public {
-        uint256 deposit = bound(uint256(depositAmount), 1, 1_000_000e18);
-        address newRecipient = address(0xBEEF);
+    // ── supportsInterface ───────────────────────────────────────────────
 
-        vm.prank(admin);
-        facility.setRecipient(newRecipient);
+    function testSupportsInterface() public view {
+        assertTrue(facility.supportsInterface(type(IERC721).interfaceId));
+        assertTrue(facility.supportsInterface(type(IERC721Metadata).interfaceId));
+        assertFalse(facility.supportsInterface(0xffffffff));
+    }
 
-        asset.mint(depositor, deposit);
-        vm.startPrank(depositor);
-        asset.approve(address(facility), deposit);
-        facility.deposit(deposit);
-        vm.stopPrank();
+    // ── constructor ─────────────────────────────────────────────────────
 
-        vm.prank(operator);
-        facility.issue(depositor, deposit, 1);
+    function testConstructorRejectsZeroAddresses() public {
+        vm.expectRevert("NFATFacility/asset-zero-address");
+        new NFATFacility("Test", address(0), pau, address(0), operator);
 
-        assertEq(asset.balanceOf(newRecipient), deposit);
-        assertEq(asset.balanceOf(pau), 0);
+        vm.expectRevert("NFATFacility/recipient-zero-address");
+        new NFATFacility("Test", address(asset), address(0), address(0), operator);
+    }
+
+    function testConstructorAllowsZeroOperator() public {
+        NFATFacility f = new NFATFacility("Test", address(asset), pau, address(0), address(0));
+        assertEq(f.can(address(0)), 0);
+    }
+
+    function testDeployerIsWarded() public view {
+        assertEq(facility.wards(address(this)), 1);
     }
 }

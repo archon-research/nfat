@@ -26,7 +26,7 @@ flowchart LR
     NFATPAU -->|3. deploy| RWA[RWA]
 ```
 
-Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU (ALMProxy)). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
+Prime deposits asset in the NFAT Facility. The Operator (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU (ALMProxy)). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
 
 ### Fund & Claim
 
@@ -40,7 +40,7 @@ The Halo sends asset into the NFAT facility over the life of the deal via `fund(
 
 This design means the same contract and the same fund/claim cycle support bullet loans, amortizing repayments, and periodic interest payments without any special-casing. Off-chain coordination (via the Synome and NFAT Beacon) determines the schedule; on-chain logic stays simple.
 
-Access is role-gated: a Halo Proxy holds admin rights, and an operator role (the NFAT Beacon) handles issuance. Deposits and transfers can optionally be gated by an on-chain Identity Network.
+Access is ward-gated: a Halo Proxy holds admin rights (`wards`), and operators (`can`) handle issuance. Deposits and transfers can optionally be gated by an on-chain Identity Network.
 
 ## Operational Flow
 
@@ -60,7 +60,7 @@ sequenceDiagram
     Note over Prime,Beacon: 2. ISSUE
     Beacon->>Facility: issue(depositor, amount, tokenId)
     Facility-->>Prime: mint NFAT
-    Facility->>NFATPAU: safeTransfer(amount) [to recipient]
+    Facility->>NFATPAU: transfer(amount) [to recipient]
     Beacon->>Beacon: record in Synome
 
     Note over Prime,Beacon: 3. FUND (repeats)
@@ -70,7 +70,7 @@ sequenceDiagram
 
     Note over Prime,Beacon: 4. CLAIM (repeats)
     Prime->>Facility: claim(tokenId, amount)
-    Facility->>Prime: safeTransfer(amount)
+    Facility->>Prime: transfer(amount)
     Note right of Facility: NFAT persists (not burned)
 ```
 
@@ -143,8 +143,8 @@ Requirements organized by lifecycle phase.
 | # | Requirement |
 |---|-------------|
 | A-1 | Deposits and transfers are optionally gated by an on-chain Identity Network |
-| A-2 | `DEFAULT_ADMIN_ROLE` (Halo Proxy) manages roles, recipient address, identity network, and emergency recovery |
-| A-3 | `ROLE_OPERATOR` (NFAT Beacon) issues NFATs |
+| A-2 | Wards (Halo Proxy) manage auth, recipient address, identity network, and emergency recovery |
+| A-3 | Operators (NFAT Beacon) issue NFATs |
 
 ### 7. Admin & Emergency
 
@@ -160,7 +160,7 @@ Requirements organized by lifecycle phase.
 
 **File:** `src/NFATFacility.sol`
 
-**Inherits:** ERC721, AccessControl, ReentrancyGuard
+**Inherits:** ERC721
 
 The core contract. Manages the deposit queue, NFAT issuance, funding (NFAT payments), and claims all in a single contract.
 
@@ -168,9 +168,12 @@ The core contract. Manages the deposit queue, NFAT issuance, funding (NFAT payme
 
 | Variable | Type | Mutability | Description |
 |----------|------|------------|-------------|
-| `asset` | `IERC20` | immutable | ERC-20 token accepted for deposits and claims |
+| `wards` | `mapping(address => uint256)` | mutable | Admin authorization (`1` = authorized) |
+| `can` | `mapping(address => uint256)` | mutable | Operator authorization (`1` = authorized) |
+| `stopped` | `uint256` | mutable | Circuit breaker (`1` = stopped) |
+| `asset` | `GemLike` | immutable | ERC-20 token accepted for deposits and claims |
 | `recipient` | `address` | mutable | Address that receives funds when NFATs are issued (typically the NFAT PAU (ALMProxy)); updatable via `setRecipient()` |
-| `identityNetwork` | `IIdentityNetwork` | mutable | Optional membership gating; `address(0)` disables checks |
+| `identityNetwork` | `IdentityNetworkLike` | mutable | Optional membership gating; `address(0)` disables checks |
 | `deposits` | `mapping(address => uint256)` | mutable | Queued deposit balance per depositor |
 | `claimable` | `mapping(uint256 => uint256)` | mutable | Funded (claimable) balance per NFAT token ID |
 | `nfatData` | `mapping(uint256 => NFATData)` | mutable | On-chain metadata per NFAT; each entry is written once at issuance and never modified (immutable) |
@@ -185,27 +188,28 @@ struct NFATData {
 }
 ```
 
-#### Roles
+#### Auth
 
-| Role | Actor | Purpose |
-|------|-------|---------|
-| `DEFAULT_ADMIN_ROLE` | HaloProxy | Role administration, recipient updates, identity network management, emergency recovery. Held by Halo Proxy which can make updates through spells. |
-| `ROLE_OPERATOR` | Halo's GovOps/NFAT Beacon | Pulls funds and issues NFATs |
+| Pattern | Storage | Purpose |
+|---------|---------|---------|
+| `wards[usr] = 1` | `mapping(address => uint256)` | Admin — full authority. Managed via `rely()`/`deny()`. |
+| `can[usr] = 1` | `mapping(address => uint256)` | Operator — can call `issue()`. Managed via `hope()`/`nope()`. |
+
+The `auth` modifier requires `wards[msg.sender] == 1`. The `operatorAuth` modifier requires `can[msg.sender] == 1 || wards[msg.sender] == 1` (wards can always act as operators).
 
 #### Constructor
 
 ```solidity
 constructor(
-    string memory name_,       // facility class name - ERC721 name and symbol become "NFAT-{name_}"
-    address admin,             // DEFAULT_ADMIN_ROLE
-    address asset_,            // immutable ERC-20
-    address recipient_,        // initial recipient (typically NFAT PAU (ALMProxy))
-    address identityNetwork_,  // optional (can be address(0))
-    address operator           // ROLE_OPERATOR
+    string memory name_,           // facility class name - ERC721 name and symbol become "NFAT-{name_}"
+    address asset_,                // immutable ERC-20
+    address recipient_,            // initial recipient (typically NFAT PAU (ALMProxy))
+    address identityNetwork_,      // optional (can be address(0))
+    address operator_              // initial operator (can be address(0))
 )
 ```
 
-All address parameters except `identityNetwork_` are validated non-zero.
+`msg.sender` is automatically warded. `asset_` and `recipient_` are validated non-zero. If `operator_` is non-zero, it is granted `can`.
 
 #### Functions
 
@@ -215,11 +219,11 @@ Queues `asset` (e.g. sUSDS) into the facility. Caller must be a member of the id
 
 | | |
 |---|---|
-| Access | Any (identity-gated) |
+| Access | Any (identity-gated), `stoppable` |
 | Guards | `amount > 0`, `_requireMember(msg.sender)` |
 | Effects | `deposits[msg.sender] += amount` |
-| Interactions | `asset.safeTransferFrom(msg.sender, this, amount)` |
-| Event | `Deposited(depositor, amount)` |
+| Interactions | `asset.transferFrom(msg.sender, this, amount)` |
+| Event | `Deposit(depositor, amount)` |
 
 **`withdraw(uint256 amount)`**
 
@@ -230,8 +234,8 @@ Withdraws queued funds before issuance. No gating - depositors should always be 
 | Access | Any |
 | Guards | `amount > 0`, `deposits[msg.sender] >= amount` |
 | Effects | `deposits[msg.sender] -= amount` |
-| Interactions | `asset.safeTransfer(msg.sender, amount)` |
-| Event | `Withdrawn(depositor, amount)` |
+| Interactions | `asset.transfer(msg.sender, amount)` |
+| Event | `Withdraw(depositor, amount)` |
 
 **`issue(address depositor, uint256 amount, uint256 tokenId)`**
 
@@ -239,11 +243,11 @@ Claims funds from a depositor's queue and mints an NFAT. `amount` may be zero to
 
 | | |
 |---|---|
-| Access | `ROLE_OPERATOR` |
+| Access | `operatorAuth`, `stoppable` |
 | Guards | `depositor != address(0)`, if `amount > 0`: `deposits[depositor] >= amount` |
 | Effects | `deposits[depositor] -= amount` (if > 0), `_mint(depositor, tokenId)`, `nfatData[tokenId]` set |
-| Interactions | `asset.safeTransfer(recipient, amount)` (if > 0) |
-| Event | `Issued(depositor, amount, tokenId)` |
+| Interactions | `asset.transfer(recipient, amount)` (if > 0) |
+| Event | `Issue(depositor, amount, tokenId)` |
 
 **`fund(uint256 tokenId, uint256 amount)`**
 
@@ -251,11 +255,11 @@ Funds an NFAT for the holder to claim. Anyone can call (caller provides tokens).
 
 | | |
 |---|---|
-| Access | Any |
+| Access | Any, `stoppable` |
 | Guards | `amount > 0`, token must exist |
 | Effects | `claimable[tokenId] += amount` |
-| Interactions | `asset.safeTransferFrom(msg.sender, this, amount)` |
-| Event | `Funded(tokenId, msg.sender, amount)` |
+| Interactions | `asset.transferFrom(msg.sender, this, amount)` |
+| Event | `Fund(tokenId, msg.sender, amount)` |
 
 **`claim(uint256 tokenId, uint256 amount)`**
 
@@ -263,46 +267,46 @@ Claims funded amounts for an NFAT. The caller specifies the amount to claim. The
 
 | | |
 |---|---|
-| Access | NFAT owner only |
+| Access | NFAT owner only, `stoppable` |
 | Guards | `ownerOf(tokenId) == msg.sender`, `amount > 0`, `claimable[tokenId] >= amount` |
 | Effects | `claimable[tokenId] -= amount` |
-| Interactions | `asset.safeTransfer(msg.sender, amount)` |
-| Event | `Claimed(tokenId, claimer, amount)` |
+| Interactions | `asset.transfer(msg.sender, amount)` |
+| Event | `Claim(tokenId, claimer, amount)` |
 
-**`emergencyWithdraw(address token, address to, uint256 amount)`**
+**`rescue(address token, address to, uint256 amount)`**
 
-Emergency recovery of any ERC-20 token held by the facility. Does not adjust internal accounting - use `emergencyWithdrawDeposit` or `emergencyWithdrawFunding` for tracked balances.
+Recovery of any ERC-20 token held by the facility. Does not adjust internal accounting - use `rescueDeposit` or `rescueFunding` for tracked balances.
 
 | | |
 |---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
+| Access | `auth` |
 | Guards | `to != address(0)` |
-| Interactions | `IERC20(token).safeTransfer(to, amount)` |
-| Event | `EmergencyWithdraw(token, to, amount)` |
+| Interactions | `GemLike(token).transfer(to, amount)` |
+| Event | `Rescue(token, to, amount)` |
 
-**`emergencyWithdrawDeposit(address depositor, address to, uint256 amount)`**
+**`rescueDeposit(address depositor, address to, uint256 amount)`**
 
-Emergency withdrawal from a depositor's queued balance with proper accounting.
+Rescue a depositor's queued balance with proper accounting.
 
 | | |
 |---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
+| Access | `auth` |
 | Guards | `to != address(0)`, `amount > 0`, `deposits[depositor] >= amount` |
 | Effects | `deposits[depositor] -= amount` |
-| Interactions | `asset.safeTransfer(to, amount)` |
-| Event | `EmergencyWithdraw(address(asset), to, amount)` |
+| Interactions | `asset.transfer(to, amount)` |
+| Event | `RescueDeposit(depositor, to, amount)` |
 
-**`emergencyWithdrawFunding(uint256 tokenId, address to, uint256 amount)`**
+**`rescueFunding(uint256 tokenId, address to, uint256 amount)`**
 
-Emergency withdrawal from an NFAT's claimable balance with proper accounting.
+Rescue an NFAT's claimable balance with proper accounting.
 
 | | |
 |---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
+| Access | `auth` |
 | Guards | `to != address(0)`, `amount > 0`, `claimable[tokenId] >= amount` |
 | Effects | `claimable[tokenId] -= amount` |
-| Interactions | `asset.safeTransfer(to, amount)` |
-| Event | `EmergencyWithdraw(address(asset), to, amount)` |
+| Interactions | `asset.transfer(to, amount)` |
+| Event | `RescueFunding(tokenId, to, amount)` |
 
 **`setRecipient(address recipient_)`**
 
@@ -310,10 +314,10 @@ Updates the recipient address (where funds from NFAT issuance are sent). Typical
 
 | | |
 |---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
+| Access | `auth` |
 | Guards | `recipient_ != address(0)` |
 | Effects | `recipient = recipient_` |
-| Event | `RecipientUpdated(recipient_)` |
+| Event | `SetRecipient(recipient_)` |
 
 **`setIdentityNetwork(address manager)`**
 
@@ -321,9 +325,9 @@ Sets or clears the identity network. Pass `address(0)` to disable.
 
 | | |
 |---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
-| Effects | `identityNetwork = IIdentityNetwork(manager)` |
-| Event | `IdentityNetworkUpdated(manager)` |
+| Access | `auth` |
+| Effects | `identityNetwork = IdentityNetworkLike(identityNetwork_)` |
+| Event | `SetIdentityNetwork(identityNetwork_)` |
 
 #### Internal: Identity Network Enforcement
 
@@ -334,15 +338,22 @@ Sets or clears the identity network. Pass `address(0)` to disable.
 #### Events
 
 ```solidity
-event FacilityCreated(address indexed asset, address indexed recipient, address indexed admin, address operator);
-event Deposited(address indexed depositor, uint256 amount);
-event Withdrawn(address indexed depositor, uint256 amount);
-event Issued(address indexed depositor, uint256 amount, uint256 indexed tokenId);
-event Funded(uint256 indexed tokenId, address indexed funder, uint256 amount);
-event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
-event RecipientUpdated(address indexed recipient);
-event IdentityNetworkUpdated(address indexed manager);
-event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
+event Rely(address indexed usr);
+event Deny(address indexed usr);
+event Hope(address indexed usr);
+event Nope(address indexed usr);
+event Stop();
+event Start();
+event Deposit(address indexed depositor, uint256 amount);
+event Withdraw(address indexed depositor, uint256 amount);
+event Issue(address indexed depositor, uint256 amount, uint256 indexed tokenId);
+event Fund(uint256 indexed tokenId, address indexed funder, uint256 amount);
+event Claim(uint256 indexed tokenId, address indexed claimer, uint256 amount);
+event SetRecipient(address indexed recipient);
+event SetIdentityNetwork(address indexed identityNetwork);
+event Rescue(address indexed token, address indexed to, uint256 amount);
+event RescueDeposit(address indexed depositor, address indexed to, uint256 amount);
+event RescueFunding(uint256 indexed tokenId, address indexed to, uint256 amount);
 ```
 
 ## Identity Network
@@ -350,7 +361,7 @@ event EmergencyWithdraw(address indexed token, address indexed to, uint256 amoun
 Deposits and ERC-721 transfers are optionally gated by an Identity Network - an on-chain registry implementing:
 
 ```solidity
-interface IIdentityNetwork {
+interface IdentityNetworkLike {
     function isMember(address account) external view returns (bool);
 }
 ```
@@ -363,7 +374,7 @@ interface IIdentityNetwork {
 - Burns are exempt (allows emergency exit regardless of membership)
 
 **Management:**
-- `setIdentityNetwork(address)` - callable by `DEFAULT_ADMIN_ROLE`
+- `setIdentityNetwork(address)` - callable by wards (`auth`)
 - Pass `address(0)` to disable all membership checks
 - Identity Network is managed externally (e.g., by Halos)
 
@@ -371,22 +382,22 @@ interface IIdentityNetwork {
 
 The facility holds two types of tracked balances - `deposits[address]` (queued pre-issuance) and `claimable[tokenId]` (funded NFAT balances) - plus potentially untracked surplus (e.g. tokens sent directly to the contract). Three functions cover the full recovery surface.
 
-### Emergency: Admin recovery with accounting
+### Rescue with accounting
 
 | Scenario | Function | Accounting |
 |----------|----------|------------|
-| Need to recover queued deposits on behalf of a depositor | `emergencyWithdrawDeposit()` | Decrements `deposits[depositor]` |
-| Need to recover funded balance from an NFAT (e.g. wrong NFAT or wrong amount) | `emergencyWithdrawFunding()` | Decrements `claimable[tokenId]` |
+| Need to recover queued deposits on behalf of a depositor | `rescueDeposit()` | Decrements `deposits[depositor]` |
+| Need to recover funded balance from an NFAT (e.g. wrong NFAT or wrong amount) | `rescueFunding()` | Decrements `claimable[tokenId]` |
 
-These are admin-only (`DEFAULT_ADMIN_ROLE` / Halo Proxy via spell). They adjust internal accounting so the invariant `asset.balanceOf(facility) >= sum(deposits) + sum(claimable)` is preserved.
+These are admin-only (`auth` / Halo Proxy via spell). They adjust internal accounting so the invariant `asset.balanceOf(facility) >= sum(deposits) + sum(claimable)` is preserved.
 
-### Last resort: Generic extraction
+### Last resort: Generic rescue
 
 | Scenario | Function | Accounting |
 |----------|----------|------------|
-| Recover any ERC-20 (wrong token sent, untracked surplus) | `emergencyWithdraw()` | None |
+| Recover any ERC-20 (wrong token sent, untracked surplus) | `rescue()` | None |
 
-The generic `emergencyWithdraw()` does not adjust `deposits` or `claimable`. Using it on the facility's own asset will break the accounting invariant - it exists for cases where no tracked balance corresponds to the tokens being recovered. Prefer the accounting-aware functions above when possible.
+The generic `rescue()` does not adjust `deposits` or `claimable`. Using it on the facility's own asset breaks the accounting invariant — it exists for cases where no tracked balance corresponds to the tokens being recovered. Prefer the accounting-aware functions above when possible.
 
 ## Deviations from Laniakea Spec
 
@@ -429,7 +440,7 @@ This implementation diverges from the [canonical NFAT specification](https://git
 ### 1. Is the `NFATData` struct needed, and if so, what should it include? (`NFATFacility.sol:17`)
    Currently stores `mintedAt`, `depositor`, and `principal` on-chain at issuance. All of this data is already available from event logs (`Issued`). If no on-chain consumer needs to read these fields, the struct adds storage cost without clear benefit. If the struct is kept, research is needed if more metadata is needed from a business or operational POV.
 
-### 2. Should `emergencyWithdraw`'s `to` address be immutable? (`NFATFacility.sol:132`)
+### 2. Should `rescue`'s `to` address be immutable?
    Setting the recovery destination in the constructor (e.g., to `DsPauseProxy` or similar) would reduce trust assumptions on the admin. Tradeoff: less flexibility in recovery scenarios.
    Currently the Halo Proxy can recover to any address via spell.
 
@@ -441,7 +452,7 @@ This implementation diverges from the [canonical NFAT specification](https://git
    In the current Laniakea spec a factory deploys identical `NFATFacility` contracts. Future needs (e.g., specific legal jurisdictions, custom restrictions) may require variants. The interface (`deposit`, `issue`, `fund`, `claim`) should remain stable even if implementations diverge.
 
 ### 5. Should the NFAT facility support granular pause controls on functions?
-   Not yet implemented in the POC. Could serve as a "retire" mechanism for deprecated facilities. The PAU's rate limits provide some control over outflows, but per-function pausing on the facility would add finer-grained emergency response.
+   The `stoppable` modifier gates `deposit`, `issue`, `fund`, and `claim`. `withdraw` is intentionally exempt so depositors can always exit. The current `stop()`/`start()` is all-or-nothing — per-function pausing would add finer-grained emergency response but also complexity.
 
 ### 6. Should funders be able to self-service retract funding (`defund()`)?
    Currently, retracting funded amounts requires admin intervention via `emergencyWithdrawFunding()`, which means a spell is needed to correct any funding mistake. An alternative is a self-service `defund()` function that lets the original funder reclaim their contribution directly. This would require per-funder accounting (`claimable[tokenId][funder]` instead of flat `claimable[tokenId]`), which in turn means `claim()` must specify which funder to draw from. The tradeoff: self-service defund avoids the spell overhead for operational corrections (e.g. Halo funds wrong NFAT or wrong amount), but adds complexity to the claim flow and mapping structure. An implementation of defund is available on the `feat/defund` branch.
