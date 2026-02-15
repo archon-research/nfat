@@ -42,6 +42,56 @@ This design means the same contract and the same fund/claim cycle support bullet
 
 Access is role-gated: a Halo Proxy holds admin rights, and an operator role (the NFAT Beacon) handles issuance. Deposits and transfers can optionally be gated by an on-chain Identity Network.
 
+## Operational Flow
+
+### Full Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant Prime as Prime PAU
+    participant Facility as NFATFacility
+    participant NFATPAU as NFAT PAU (Halo)
+    participant Beacon as Operator (NFAT Beacon)
+
+    Note over Prime,Beacon: 1. DEPOSIT
+    Prime->>Facility: deposit(amount)
+    Note right of Facility: deposits[prime] += amount
+
+    Note over Prime,Beacon: 2. ISSUE
+    Beacon->>Facility: issue(depositor, amount, tokenId)
+    Facility-->>Prime: mint NFAT
+    Facility->>NFATPAU: safeTransfer(amount) [to recipient]
+    Beacon->>Beacon: record in Synome
+
+    Note over Prime,Beacon: 3. FUND (repeats)
+    NFATPAU->>Facility: fund(tokenId, amount)
+    Note right of Facility: claimable[tokenId] += amount
+    Beacon->>Beacon: record in Synome
+
+    Note over Prime,Beacon: 4. CLAIM (repeats)
+    Prime->>Facility: claim(tokenId, amount)
+    Facility->>Prime: safeTransfer(amount)
+    Note right of Facility: NFAT persists (not burned)
+```
+
+Steps 3–4 repeat as the Halo makes payments over the life of the deal.
+
+### Payment Patterns
+
+All patterns use the same `fund()` / `claim()` cycle - the difference is off-chain coordination:
+
+| Pattern | Halo action | Prime action | NFAT state |
+|---------|-------------|--------------|------------|
+| **Bullet loan** | Fund principal + yield at maturity | Claim once | Persists |
+| **Amortizing** | Fund each scheduled payment | Claim after each funding | Persists throughout |
+| **Periodic interest** | Fund interest periodically | Claim as available | Persists until final |
+
+Because the NFAT is never burned, the contract does not need to distinguish between these patterns - the Synome and NFAT Beacon handle scheduling.
+
+### Token ID Strategy
+
+Token IDs are provided by the Operator, who coordinates with the Synome to ensure uniqueness. The ERC-721 `_mint` reverts if a `tokenId` already exists, preventing duplicates on-chain.
+
 ## Business Requirements
 
 Requirements organized by lifecycle phase.
@@ -100,59 +150,9 @@ Requirements organized by lifecycle phase.
 
 | # | Requirement |
 |---|-------------|
-| E-1 | Admin may recover any ERC-20 token held by the facility |
+| E-1 | Admin may recover any ERC-20 token held by the facility in case of operational failures |
 | E-2 | Admin may update the recipient address |
 | E-3 | Granular pause controls - in case of emergencies or to retire a facility |
-
-## Operational Flow
-
-### Full Lifecycle
-
-```mermaid
-sequenceDiagram
-    participant Prime as Prime PAU
-    participant Facility as NFATFacility
-    participant NFATPAU as NFAT PAU (Halo)
-    participant Beacon as Operator (NFAT Beacon)
-
-    Note over Prime,Beacon: 1. DEPOSIT
-    Prime->>Facility: deposit(amount)
-    Note right of Facility: deposits[prime] += amount
-
-    Note over Prime,Beacon: 2. ISSUE
-    Beacon->>Facility: issue(depositor, amount, tokenId)
-    Facility-->>Prime: mint NFAT
-    Facility->>NFATPAU: safeTransfer(amount) [to recipient]
-    Beacon->>Beacon: record in Synome
-
-    Note over Prime,Beacon: 3. FUND (repeats)
-    NFATPAU->>Facility: fund(tokenId, amount)
-    Note right of Facility: claimable[tokenId] += amount
-    Beacon->>Beacon: record in Synome
-
-    Note over Prime,Beacon: 4. CLAIM (repeats)
-    Prime->>Facility: claim(tokenId, amount)
-    Facility->>Prime: safeTransfer(amount)
-    Note right of Facility: NFAT persists (not burned)
-```
-
-Steps 3–4 repeat as the Halo makes payments over the life of the deal.
-
-### Payment Patterns
-
-All patterns use the same `fund()` / `claim()` cycle - the difference is off-chain coordination:
-
-| Pattern | Halo action | Prime action | NFAT state |
-|---------|-------------|--------------|------------|
-| **Bullet loan** | Fund principal + yield at maturity | Claim once | Persists |
-| **Amortizing** | Fund each scheduled payment | Claim after each funding | Persists throughout |
-| **Periodic interest** | Fund interest periodically | Claim as available | Persists until final |
-
-Because the NFAT is never burned, the contract does not need to distinguish between these patterns - the Synome and NFAT Beacon handle scheduling.
-
-### Token ID Strategy
-
-Token IDs are provided by the Operator, who coordinates with the Synome to ensure uniqueness. The ERC-721 `_mint` reverts if a `tokenId` already exists, preventing duplicates on-chain.
 
 ## Contracts
 
