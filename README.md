@@ -1,14 +1,46 @@
----
-title: NFAT Technical Exploration
-status: Draft
-date: 2026-02-13
----
-
 # NFAT Technical Exploration
 
 This document explores the NFAT (Non-Fungible Allocation Token) smart contract implementation. It describes the NFAT draft implementation, documents deliberate deviations from the [Laniakea NFAT specification](https://github.com/sky-ecosystem/laniakea-docs/blob/main/smart-contracts/nfats.md), and tracks open design questions. The Solidity implementation in this repository is a proof of concept intended to demonstrate the business logic.
 
----
+## Overview
+
+An NFAT (Non-Fungible Allocation Token) is an ERC-721 token that represents a claim on assets within a facility. It is part of the Laniakea ecosystem for real-world asset (RWA) collateral management in the Sky Protocol.
+
+The core contract is the **NFATFacility** - a single Solidity contract that manages the full lifecycle of an NFAT:
+
+1. **Deposit** - Suppliers (Primes) deposits an ERC-20 token (e.g. sUSDS) into the facility's queue.
+2. **Issue** - An operator (NFAT Beacon) mints an ERC-721 NFAT to the depositor and transfers the queued funds to a designated recipient (typically a Halo-controlled ALM proxy) for deployment into real-world assets.
+3. **Fund** - Over the life of the deal, funds flow back into the facility against specific NFATs (interest, principal repayments, etc.).
+4. **Claim** - The NFAT holder withdraws available funds at their discretion. The NFAT is never burned - funding and claiming can repeat indefinitely.
+
+### Deposit & Issuance
+
+```mermaid
+flowchart LR
+    Prime[Prime PAU] -->|1. deposit asset| Facility[NFATFacility]
+    Beacon["Operator
+    (NFAT Beacon)"] -->|2. issue| Facility
+    Facility -->|2. mint NFAT| Prime
+    Facility -->|2. transfer assets| NFATPAU["NFAT PAU
+    (controlled by Halo)"]
+    NFATPAU -->|3. deploy| RWA[RWA]
+```
+
+Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU (ALMProxy)). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
+
+### Fund & Claim
+
+```mermaid
+flowchart LR
+    HaloPAU[Halo PAU] -->|1. fund| Facility[NFATFacility]
+    Facility -->|2. claim| Holder[NFAT Holder]
+```
+
+The Halo sends asset into the NFAT facility over the life of the deal via `fund()`. The NFAT holder calls `claim()` to collect available asset. The NFAT is never burned - funding and claiming can repeat.
+
+This design means the same contract and the same fund/claim cycle support bullet loans, amortizing repayments, and periodic interest payments without any special-casing. Off-chain coordination (via the Synome and NFAT Beacon) determines the schedule; on-chain logic stays simple.
+
+Access is role-gated: a Halo Proxy holds admin rights, and an operator role (the NFAT Beacon) handles issuance. Deposits and transfers can optionally be gated by an on-chain Identity Network.
 
 ## Business Requirements
 
@@ -28,7 +60,7 @@ Requirements organized by lifecycle phase.
 |---|-------------|
 | I-1 | The Operator may issue an NFAT by claiming funds from a depositor's queue and minting an ERC-721 |
 | I-2 | Issued funds are transferred to the recipient (NFAT PAU (ALMProxy)) |
-| I-3 | An NFAT may be issued with zero principal (reinvest existing NFAT) |
+| I-3 | An NFAT may be issued with zero principal - e.g. rollover existing NFAT into a new NFAT, with terms detailed in Synome |
 | I-4 | Token IDs are Operator-assigned; uniqueness enforced (e.g. by ERC-721 `_mint`) |
 | I-5 | On-chain metadata records minting timestamp, depositor, and principal |
 | I-6 | A single deposit can be split across multiple NFATs with different principals (partial sweeps) |
@@ -37,11 +69,9 @@ Requirements organized by lifecycle phase.
 
 | # | Requirement |
 |---|-------------|
-| F-1 | Anyone may fund an existing NFAT with the facility's asset |
-| F-2 | Funded amounts accumulate until claimed |
-| F-3 | The same fund/claim cycle supports bullet, amortizing, and periodic-interest patterns |
-| F-4 | Payment scheduling is managed by the Synome and NFAT Beacon |
-| F-5 | Admin may retract funding from an NFAT via `emergencyWithdrawFunding()` (operational error correction) |
+| F-1 | Funded amounts accumulate until claimed |
+| F-2 | The same fund/claim cycle supports bullet, amortizing, and periodic-interest patterns |
+| F-3 | Payment scheduling is managed by the Synome and NFAT Beacon |
 
 ### 4. Claims
 
@@ -63,9 +93,8 @@ Requirements organized by lifecycle phase.
 | # | Requirement |
 |---|-------------|
 | A-1 | Deposits and transfers are optionally gated by an on-chain Identity Network |
-| A-2 | Admin may set or clear the Identity Network at any time |
-| A-3 | `DEFAULT_ADMIN_ROLE` (Halo Proxy) manages roles, recipient address, identity network, and emergency recovery |
-| A-4 | `ROLE_OPERATOR` (NFAT Beacon) issues NFATs |
+| A-2 | `DEFAULT_ADMIN_ROLE` (Halo Proxy) manages roles, recipient address, identity network, and emergency recovery |
+| A-3 | `ROLE_OPERATOR` (NFAT Beacon) issues NFATs |
 
 ### 7. Admin & Emergency
 
@@ -74,38 +103,56 @@ Requirements organized by lifecycle phase.
 | E-1 | Admin may recover any ERC-20 token held by the facility |
 | E-2 | Admin may update the recipient address |
 | E-3 | Granular pause controls - in case of emergencies or to retire a facility |
-| E-4 | Admin may emergency-withdraw from deposits or claimable balances with proper accounting |
 
----
+## Operational Flow
 
-## Architecture Overview
-
-### Issuance
+### Full Lifecycle
 
 ```mermaid
-flowchart LR
-    Prime[Prime PAU] -->|1. deposit asset| Facility[NFATFacility]
-    Beacon["Operator
-    (NFAT Beacon)"] -->|2. issue| Facility
-    Facility -->|2. mint NFAT| Prime
-    Facility -->|2. transfer assets| NFATPAU["NFAT PAU
-    (controlled by Halo)"]
-    NFATPAU -->|3. deploy| RWA[RWA]
+sequenceDiagram
+    participant Prime as Prime PAU
+    participant Facility as NFATFacility
+    participant NFATPAU as NFAT PAU (Halo)
+    participant Beacon as Operator (NFAT Beacon)
+
+    Note over Prime,Beacon: 1. DEPOSIT
+    Prime->>Facility: deposit(amount)
+    Note right of Facility: deposits[prime] += amount
+
+    Note over Prime,Beacon: 2. ISSUE
+    Beacon->>Facility: issue(depositor, amount, tokenId)
+    Facility-->>Prime: mint NFAT
+    Facility->>NFATPAU: safeTransfer(amount) [to recipient]
+    Beacon->>Beacon: record in Synome
+
+    Note over Prime,Beacon: 3. FUND (repeats)
+    NFATPAU->>Facility: fund(tokenId, amount)
+    Note right of Facility: claimable[tokenId] += amount
+    Beacon->>Beacon: record in Synome
+
+    Note over Prime,Beacon: 4. CLAIM (repeats)
+    Prime->>Facility: claim(tokenId, amount)
+    Facility->>Prime: safeTransfer(amount)
+    Note right of Facility: NFAT persists (not burned)
 ```
 
-Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU (ALMProxy)). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
+Steps 3–4 repeat as the Halo makes payments over the life of the deal.
 
-### Payment
+### Payment Patterns
 
-```mermaid
-flowchart LR
-    HaloPAU[Halo PAU] -->|1. fund| Facility[NFATFacility]
-    Facility -->|2. claim| Holder[NFAT Holder]
-```
+All patterns use the same `fund()` / `claim()` cycle - the difference is off-chain coordination:
 
-The Halo sends asset into the NFAT facility over the life of the deal via `fund()`. The NFAT holder calls `claim()` to collect available asset. The NFAT is never burned - funding and claiming can repeat.
+| Pattern | Halo action | Prime action | NFAT state |
+|---------|-------------|--------------|------------|
+| **Bullet loan** | Fund principal + yield at maturity | Claim once | Persists |
+| **Amortizing** | Fund each scheduled payment | Claim after each funding | Persists throughout |
+| **Periodic interest** | Fund interest periodically | Claim as available | Persists until final |
 
----
+Because the NFAT is never burned, the contract does not need to distinguish between these patterns - the Synome and NFAT Beacon handle scheduling.
+
+### Token ID Strategy
+
+Token IDs are provided by the Operator, who coordinates with the Synome to ensure uniqueness. The ERC-721 `_mint` reverts if a `tokenId` already exists, preventing duplicates on-chain.
 
 ## Contracts
 
@@ -298,58 +345,6 @@ event IdentityNetworkUpdated(address indexed manager);
 event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
 ```
 
-## Operational Flow
-
-### Full Lifecycle
-
-```mermaid
-sequenceDiagram
-    participant Prime as Prime PAU
-    participant Facility as NFATFacility
-    participant NFATPAU as NFAT PAU (Halo)
-    participant Beacon as Operator (NFAT Beacon)
-
-    Note over Prime,Beacon: 1. DEPOSIT
-    Prime->>Facility: deposit(amount)
-    Note right of Facility: deposits[prime] += amount
-
-    Note over Prime,Beacon: 2. ISSUE
-    Beacon->>Facility: issue(depositor, amount, tokenId)
-    Facility-->>Prime: mint NFAT
-    Facility->>NFATPAU: safeTransfer(amount) [to recipient]
-    Beacon->>Beacon: record in Synome
-
-    Note over Prime,Beacon: 3. FUND (repeats)
-    NFATPAU->>Facility: fund(tokenId, amount)
-    Note right of Facility: claimable[tokenId] += amount
-    Beacon->>Beacon: record in Synome
-
-    Note over Prime,Beacon: 4. CLAIM (repeats)
-    Prime->>Facility: claim(tokenId, amount)
-    Facility->>Prime: safeTransfer(amount)
-    Note right of Facility: NFAT persists (not burned)
-```
-
-Steps 3–4 repeat as the Halo makes payments over the life of the deal.
-
-### Payment Patterns
-
-All patterns use the same `fund()` / `claim()` cycle - the difference is off-chain coordination:
-
-| Pattern | Halo action | Prime action | NFAT state |
-|---------|-------------|--------------|------------|
-| **Bullet loan** | Fund principal + yield at maturity | Claim once | Persists |
-| **Amortizing** | Fund each scheduled payment | Claim after each funding | Persists throughout |
-| **Periodic interest** | Fund interest periodically | Claim as available | Persists until final |
-
-Because the NFAT is never burned, the contract does not need to distinguish between these patterns - the Synome and NFAT Beacon handle scheduling.
-
-### Token ID Strategy
-
-Token IDs are provided by the Operator, who coordinates with the Synome to ensure uniqueness. The ERC-721 `_mint` reverts if a `tokenId` already exists, preventing duplicates on-chain.
-
----
-
 ## Identity Network
 
 Deposits and ERC-721 transfers are optionally gated by an Identity Network - an on-chain registry implementing:
@@ -372,8 +367,6 @@ interface IIdentityNetwork {
 - Pass `address(0)` to disable all membership checks
 - Identity Network is managed externally (e.g., by Halos)
 
----
-
 ## Emergency Recovery
 
 The facility holds two types of tracked balances - `deposits[address]` (queued pre-issuance) and `claimable[tokenId]` (funded NFAT balances) - plus potentially untracked surplus (e.g. tokens sent directly to the contract). Three functions cover the full recovery surface.
@@ -394,16 +387,6 @@ These are admin-only (`DEFAULT_ADMIN_ROLE` / Halo Proxy via spell). They adjust 
 | Recover any ERC-20 (wrong token sent, untracked surplus) | `emergencyWithdraw()` | None |
 
 The generic `emergencyWithdraw()` does not adjust `deposits` or `claimable`. Using it on the facility's own asset will break the accounting invariant - it exists for cases where no tracked balance corresponds to the tokens being recovered. Prefer the accounting-aware functions above when possible.
-
-### Invariant
-
-```
-asset.balanceOf(facility) >= sum(deposits[*]) + sum(claimable[*])
-```
-
-All accounting-aware functions (`withdraw`, `emergencyWithdrawDeposit`, `emergencyWithdrawFunding`, `claim`, `issue`) maintain this invariant. Only the generic `emergencyWithdraw()` can break it.
-
----
 
 ## Deviations from Laniakea Spec
 
@@ -443,22 +426,22 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 ## Outstanding Questions
 
-1. **Is the `NFATData` struct needed, and if so, what should it include?** (`NFATFacility.sol:17`)
-   Currently stores `mintedAt`, `depositor`, and `principal` on-chain at issuance. All of this data is already available from event logs (`Issued`). If no on-chain consumer needs to read these fields, the struct adds storage cost without clear benefit. If the struct is kept, need to research if more metadata is needed from a business or operational POV.
+### 1. Is the `NFATData` struct needed, and if so, what should it include? (`NFATFacility.sol:17`)
+   Currently stores `mintedAt`, `depositor`, and `principal` on-chain at issuance. All of this data is already available from event logs (`Issued`). If no on-chain consumer needs to read these fields, the struct adds storage cost without clear benefit. If the struct is kept, research is needed if more metadata is needed from a business or operational POV.
 
-2. **Should `emergencyWithdraw`'s `to` address be immutable?** (`NFATFacility.sol:132`)
+### 2. Should `emergencyWithdraw`'s `to` address be immutable? (`NFATFacility.sol:132`)
    Setting the recovery destination in the constructor (e.g., to `DsPauseProxy` or similar) would reduce trust assumptions on the admin. Tradeoff: less flexibility in recovery scenarios.
    Currently the Halo Proxy can recover to any address via spell.
 
-3. **Should NFAT facilities be upgradeable?**
+### 3. Should NFAT facilities be upgradeable?
    Halo Proxy can update certain parameters - however should they also be able to upgrade the logic of NFAT facilities?
    Argument against: New facilities can be deployed; funds don't need migration since facilities are transit points. With factories and Synome automation, deploying new facilities without painful migration should be possible.
 
-4. **Should all NFAT facilities behave identically or can they differ?**
+### 4. Should all NFAT facilities behave identically or can they differ?
    In the current Laniakea spec a factory deploys identical `NFATFacility` contracts. Future needs (e.g., specific legal jurisdictions, custom restrictions) may require variants. The interface (`deposit`, `issue`, `fund`, `claim`) should remain stable even if implementations diverge.
 
-5. **Should we support granular pause controls?**
+### 5. Should the NFAT facility support granular pause controls on functions?
    Not yet implemented in the POC. Could serve as a "retire" mechanism for deprecated facilities. The PAU's rate limits provide some control over outflows, but per-function pausing on the facility would add finer-grained emergency response.
 
-6. **Should funders be able to self-service retract funding (`defund()`)?**
+### 6. Should funders be able to self-service retract funding (`defund()`)?
    Currently, retracting funded amounts requires admin intervention via `emergencyWithdrawFunding()`, which means a spell is needed to correct any funding mistake. An alternative is a self-service `defund()` function that lets the original funder reclaim their contribution directly. This would require per-funder accounting (`claimable[tokenId][funder]` instead of flat `claimable[tokenId]`), which in turn means `claim()` must specify which funder to draw from. The tradeoff: self-service defund avoids the spell overhead for operational corrections (e.g. Halo funds wrong NFAT or wrong amount), but adds complexity to the claim flow and mapping structure. An implementation of defund is available on the `feat/defund` branch.
