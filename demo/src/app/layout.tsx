@@ -18,40 +18,42 @@ export default function RootLayout({
         <title>NFAT Demo</title>
         <style>{`
           [data-theme="dark"] {
-            --bg-base: #09090b;
-            --bg-card: #18181b;
-            --bg-elevated: #27272a;
-            --bg-inset: #0f0f12;
-            --border: #27272a;
-            --border-subtle: #1e1e22;
-            --border-hover: #3f3f46;
-            --text-primary: #fafafa;
-            --text-secondary: #a1a1aa;
-            --text-muted: #71717a;
-            --text-dim: #52525b;
-            --accent: #a78bfa;
-            --positive: #4ade80;
+            --bg-base: #0a0e14;
+            --bg-card: #111820;
+            --bg-elevated: #1a2332;
+            --bg-inset: #080c12;
+            --border: #1c2736;
+            --border-subtle: #141c28;
+            --border-hover: #2a3a4e;
+            --text-primary: #e2e8f0;
+            --text-secondary: #8899aa;
+            --text-muted: #5a6f82;
+            --text-dim: #3d5166;
+            --accent: #3b82f6;
+            --positive: #34d399;
             --facility-senior: #34d399;
-            --facility-mezzanine: #fbbf24;
-            --facility-structured: #a78bfa;
+            --facility-mezzanine: #818cf8;
+            --facility-structured: #f472b6;
+            --overlay: rgba(4,10,20,0.7);
           }
           [data-theme="light"] {
-            --bg-base: #fafafa;
+            --bg-base: #f0f4f8;
             --bg-card: #ffffff;
-            --bg-elevated: #e4e4e7;
-            --bg-inset: #f4f4f5;
-            --border: #d4d4d8;
-            --border-subtle: #e4e4e7;
-            --border-hover: #a1a1aa;
-            --text-primary: #09090b;
-            --text-secondary: #52525b;
-            --text-muted: #71717a;
-            --text-dim: #a1a1aa;
-            --accent: #7c3aed;
-            --positive: #16a34a;
-            --facility-senior: #059669;
-            --facility-mezzanine: #d97706;
-            --facility-structured: #7c3aed;
+            --bg-elevated: #dce4ed;
+            --bg-inset: #e8eef4;
+            --border: #c4d0dc;
+            --border-subtle: #dae2ec;
+            --border-hover: #8899aa;
+            --text-primary: #0a0e14;
+            --text-secondary: #3d5166;
+            --text-muted: #5a6f82;
+            --text-dim: #8899aa;
+            --accent: #2563eb;
+            --positive: #16a364;
+            --facility-senior: #16a364;
+            --facility-mezzanine: #6366d0;
+            --facility-structured: #d63a84;
+            --overlay: rgba(4,10,20,0.5);
           }
           *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; background: var(--bg-base); color: var(--text-primary); }
@@ -64,7 +66,7 @@ export default function RootLayout({
           .left-panel { flex: 1; min-width: 0; }
           .right-panel { width: 400px; flex-shrink: 0; display: flex; flex-direction: column; gap: 0; }
           .facility-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
-          .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+          .modal-overlay { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 1000; }
           .modal-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; min-width: 360px; max-width: 480px; width: 100%; }
           @media (max-width: 900px) {
             .main-layout { flex-direction: column; }

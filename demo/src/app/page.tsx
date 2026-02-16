@@ -536,9 +536,6 @@ export default function Home() {
           )}
         </button>
       </div>
-      <p style={{ color: "var(--text-secondary)", fontSize: 13, marginBottom: 20 }}>
-        Interactive walkthrough on local Anvil testchain
-      </p>
 
       {/* Tab Switcher */}
       <div
@@ -1114,7 +1111,7 @@ export default function Home() {
                       fontSize: 11,
                     }}
                   >
-                    <span style={{ color: FACILITY_META[key].color }}>
+                    <span style={{ color: "var(--text-muted)" }}>
                       {FACILITY_META[key].label}
                     </span>
                     <span style={{ color: "var(--text-secondary)" }}>
@@ -1423,31 +1420,8 @@ function NfatTableRow({
       {isExpanded && (
         <tr>
           <td colSpan={6} style={{ padding: "12px 16px", background: "var(--bg-inset)" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
-              <div style={{ background: "var(--bg-card)", borderRadius: 6, padding: "8px 10px" }}>
-                <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", marginBottom: 4 }}>
-                  Principal
-                </div>
-                <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                  {fmt(n.principal)} sUSDS
-                </div>
-              </div>
-              <div style={{ background: "var(--bg-card)", borderRadius: 6, padding: "8px 10px" }}>
-                <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", marginBottom: 4 }}>
-                  Claimable
-                </div>
-                <div style={{ fontSize: 13, color: n.claimable > 0n ? "var(--positive)" : "var(--text-secondary)" }}>
-                  {fmt(n.claimable)} sUSDS
-                </div>
-              </div>
-              <div style={{ background: "var(--bg-card)", borderRadius: 6, padding: "8px 10px" }}>
-                <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", marginBottom: 4 }}>
-                  Minted
-                </div>
-                <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                  {new Date(n.mintedAt * 1000).toLocaleString()}
-                </div>
-              </div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
+              Minted {new Date(n.mintedAt * 1000).toLocaleString()}
             </div>
             <h4
               style={{
@@ -1466,7 +1440,7 @@ function NfatTableRow({
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {nfatEvents.map((ev, i) => (
-                  <EventRow key={i} ev={ev} />
+                  <EventRow key={i} ev={ev} showDot={false} />
                 ))}
               </div>
             )}
@@ -1480,9 +1454,11 @@ function NfatTableRow({
 function EventRow({
   ev,
   onClick,
+  showDot = true,
 }: {
   ev: EventEntry;
   onClick?: () => void;
+  showDot?: boolean;
 }) {
   let detail = "";
 
@@ -1513,20 +1489,21 @@ function EventRow({
         gap: 8,
         padding: "6px 8px",
         borderRadius: 4,
-        background: "var(--bg-inset)",
         cursor: onClick ? "pointer" : "default",
         fontSize: 12,
       }}
     >
-      <span
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: "50%",
-          background: FACILITY_META[ev.facility].color,
-          flexShrink: 0,
-        }}
-      />
+      {showDot && (
+        <span
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            background: FACILITY_META[ev.facility].color,
+            flexShrink: 0,
+          }}
+        />
+      )}
       <span style={{ color: "var(--text-primary)", fontWeight: 600, width: 72, flexShrink: 0 }}>
         {ev.action}
       </span>
