@@ -12,3 +12,9 @@ docs/
 
 # Dotenv file
 .env
+
+# NPM                                                           
+node_modules/
+/demo/node_modules/
+.next/
+/demo/.next/

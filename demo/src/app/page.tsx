@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   createWalletClient,
   createPublicClient,
@@ -73,21 +73,21 @@ const FACILITY_META: Record<
     label: "Senior Secured",
     term: "6-12 months",
     apy: "8-12%",
-    color: "#34d399",
+    color: "var(--facility-senior)",
     description: "First-lien position with priority claim on collateral",
   },
   mezzanine: {
     label: "Mezzanine",
     term: "12-24 months",
     apy: "12-18%",
-    color: "#fbbf24",
+    color: "var(--facility-mezzanine)",
     description: "Subordinated debt with enhanced yield",
   },
   structured: {
     label: "Structured",
-    term: "Negotiated",
-    apy: "Risk-adjusted",
-    color: "#a78bfa",
+    term: "6 months",
+    apy: "8%",
+    color: "var(--facility-structured)",
     description: "Bespoke tranching with tailored risk-return profile",
   },
 };
@@ -118,6 +118,15 @@ type DepositQueueEntry = {
   facility: FacilityKey;
 };
 
+type ViewKey = "depositor" | "halo" | "nfats";
+type ModalType = "deposit" | "withdraw" | "claim" | "issue" | "fund" | null;
+type ModalContext = {
+  depositor?: string;
+  tokenId?: string;
+  maxAmount?: string;
+  prefillAmount?: string;
+};
+
 function emptyRecord<T>(val: T): Record<FacilityKey, T> {
   return { senior: val, mezzanine: val, structured: val };
 }
@@ -126,7 +135,34 @@ function emptyRecord<T>(val: T): Record<FacilityKey, T> {
 
 export default function Home() {
   const [role, setRole] = useState<RoleKey>("depositor");
+  const [view, setView] = useState<ViewKey>("depositor");
   const [loading, setLoading] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+
+  // Modal state
+  const [modal, setModal] = useState<ModalType>(null);
+  const [modalContext, setModalContext] = useState<ModalContext>({});
+  const [modalAmount, setModalAmount] = useState("");
+  const [modalTokenId, setModalTokenId] = useState("");
+
+  // NFATs tab: expanded row
+  const [expandedNfat, setExpandedNfat] = useState<string | null>(null);
+
+  // Theme: read from localStorage on mount, sync to document
+  useEffect(() => {
+    const saved = localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") {
+      setTheme(saved);
+      document.documentElement.dataset.theme = saved;
+    }
+  }, []);
+
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("theme", next);
+  }
 
   // Active facility
   const [activeFacility, setActiveFacility] =
@@ -146,30 +182,19 @@ export default function Home() {
   // Deposit queue (computed from events + on-chain deposits mapping)
   const [depositQueue, setDepositQueue] = useState<DepositQueueEntry[]>([]);
 
-  // Right pane state
-  const [rightTab, setRightTab] = useState<"nfats" | "events">("nfats");
-  const [selectedNfat, setSelectedNfat] = useState<{
-    facility: FacilityKey;
-    tokenId: string;
-  } | null>(null);
-
   // Facility on-chain names
   const [facilityNames, setFacilityNames] = useState<
     Record<FacilityKey, string>
   >(emptyRecord(""));
 
-  // Inputs
-  const [depositAmt, setDepositAmt] = useState("1000");
-  const [withdrawAmt, setWithdrawAmt] = useState("500");
-  const [issueDepositor, setIssueDepositor] = useState<string>(
-    ROLES.depositor.address,
-  );
-  const [issueAmt, setIssueAmt] = useState("1000");
-  const [issueTokenId, setIssueTokenId] = useState("1");
-  const [fundTokenId, setFundTokenId] = useState("1");
-  const [fundAmt, setFundAmt] = useState("500");
-  const [claimTokenId, setClaimTokenId] = useState("1");
-  const [claimAmt, setClaimAmt] = useState("500");
+  // ── Modal helpers ──────────────────────────────────────────────
+
+  function openModal(type: ModalType, ctx: ModalContext = {}) {
+    setModal(type);
+    setModalContext(ctx);
+    setModalAmount(ctx.prefillAmount || "");
+    setModalTokenId("");
+  }
 
   // ── Refresh: fetch events + state from chain ──────────────────
 
@@ -179,10 +204,6 @@ export default function Home() {
       const addrList = [
         { label: "Depositor", addr: ROLES.depositor.address },
         { label: "Halo", addr: ROLES.halo.address },
-        {
-          label: "Recipient",
-          addr: "0x90F79bf6EB2c4f870365E785982E1f101E93b906" as `0x${string}`,
-        },
       ];
       const newBalances: Record<string, bigint> = {};
       for (const { label, addr } of addrList) {
@@ -357,6 +378,7 @@ export default function Home() {
     try {
       await fn();
       await refresh();
+      setModal(null);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("Action error:", msg);
@@ -375,7 +397,7 @@ export default function Home() {
         address: facilityAddr,
         abi: facilityAbi,
         functionName: "deposit",
-        args: [parseUnits(depositAmt, 18)],
+        args: [parseUnits(modalAmount, 18)],
       });
       await publicClient.waitForTransactionReceipt({ hash });
     });
@@ -387,22 +409,22 @@ export default function Home() {
         address: facilityAddr,
         abi: facilityAbi,
         functionName: "withdraw",
-        args: [parseUnits(withdrawAmt, 18)],
+        args: [parseUnits(modalAmount, 18)],
       });
       await publicClient.waitForTransactionReceipt({ hash });
     });
 
   const doIssue = () =>
     exec(async () => {
-      const wc = walletClient("operator");
+      const wc = walletClient("halo");
       const hash = await wc.writeContract({
         address: facilityAddr,
         abi: facilityAbi,
         functionName: "issue",
         args: [
-          issueDepositor as `0x${string}`,
-          parseUnits(issueAmt, 18),
-          BigInt(issueTokenId),
+          modalContext.depositor as `0x${string}`,
+          parseUnits(modalAmount, 18),
+          BigInt(modalTokenId),
         ],
       });
       await publicClient.waitForTransactionReceipt({ hash });
@@ -415,7 +437,7 @@ export default function Home() {
         address: facilityAddr,
         abi: facilityAbi,
         functionName: "fund",
-        args: [BigInt(fundTokenId), parseUnits(fundAmt, 18)],
+        args: [BigInt(modalContext.tokenId!), parseUnits(modalAmount, 18)],
       });
       await publicClient.waitForTransactionReceipt({ hash });
     });
@@ -427,287 +449,525 @@ export default function Home() {
         address: facilityAddr,
         abi: facilityAbi,
         functionName: "claim",
-        args: [BigInt(claimTokenId), parseUnits(claimAmt, 18)],
+        args: [BigInt(modalContext.tokenId!), parseUnits(modalAmount, 18)],
       });
       await publicClient.waitForTransactionReceipt({ hash });
     });
 
   // ── Derived data ──────────────────────────────────────────────
 
-  const active = ROLES[role];
   const allNfats = FACILITY_KEYS.flatMap((k) => nfats[k]);
-
-  // Events for detail view
-  const selectedNfatInfo =
-    selectedNfat &&
-    nfats[selectedNfat.facility].find(
-      (n) => n.tokenId === selectedNfat.tokenId,
-    );
-  const selectedNfatEvents = selectedNfat
-    ? events.filter(
-        (e) =>
-          e.facility === selectedNfat.facility &&
-          e.tokenId === selectedNfat.tokenId,
-      )
-    : [];
 
   // Deposit queue for active facility
   const activeFacilityQueue = depositQueue.filter(
     (d) => d.facility === activeFacility,
   );
 
+  // Depositor's own queue entry for active facility
+  const depositorQueue = activeFacilityQueue.find(
+    (d) => d.depositor.toLowerCase() === ROLES.depositor.address.toLowerCase(),
+  );
+
+  // NFATs for active facility only
+  const activeFacilityNfats = nfats[activeFacility];
+
+  // Depositor's own NFATs for active facility
+  const depositorNfats = activeFacilityNfats.filter(
+    (n) => n.depositor.toLowerCase() === ROLES.depositor.address.toLowerCase(),
+  );
+
+  // ── Tab switching ─────────────────────────────────────────────
+
+  function switchView(v: ViewKey) {
+    setView(v);
+    if (v === "depositor") setRole("depositor");
+    else if (v === "halo") setRole("halo");
+  }
+
   // ── Render ────────────────────────────────────────────────────
+
+  const modalTitles: Record<string, string> = {
+    deposit: "Deposit sUSDS",
+    withdraw: "Withdraw sUSDS",
+    claim: `Claim from NFAT #${modalContext.tokenId || ""}`,
+    issue: "Issue NFAT",
+    fund: `Fund NFAT #${modalContext.tokenId || ""}`,
+  };
 
   return (
     <div style={{ maxWidth: 1340, margin: "0 auto", padding: "24px 16px" }}>
-      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
-        NFAT Demo
-      </h1>
-      <p style={{ color: "#a1a1aa", fontSize: 13, marginBottom: 20 }}>
+      {/* ── NFATs Tab (full width) ────────────────────────────── */}
+      {view === "nfats" ? (
+        <>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+        <h1 style={{ fontSize: 24, fontWeight: 700 }}>NFAT Dashboard</h1>
+        <button
+          onClick={toggleTheme}
+          style={{
+            background: "none",
+            color: "var(--text-muted)",
+            padding: "6px",
+            borderRadius: 6,
+            marginLeft: "auto",
+            lineHeight: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {theme === "dark" ? (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="5" />
+              <line x1="12" y1="1" x2="12" y2="3" />
+              <line x1="12" y1="21" x2="12" y2="23" />
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+              <line x1="1" y1="12" x2="3" y2="12" />
+              <line x1="21" y1="12" x2="23" y2="12" />
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+            </svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+          )}
+        </button>
+      </div>
+      <p style={{ color: "var(--text-secondary)", fontSize: 13, marginBottom: 20 }}>
         Interactive walkthrough on local Anvil testchain
       </p>
 
-      <div style={{ display: "flex", gap: 20 }}>
-        {/* ── Left Panel ─────────────────────────────────────── */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {/* Role Switcher */}
-          <div
+      {/* Tab Switcher */}
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          marginBottom: 20,
+          padding: 16,
+          background: "var(--bg-card)",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+        }}
+      >
+        {(["depositor", "halo", "nfats"] as ViewKey[]).map((v) => (
+          <button
+            key={v}
+            onClick={() => switchView(v)}
             style={{
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-              marginBottom: 20,
-              padding: 16,
-              background: "#18181b",
-              borderRadius: 8,
+              background: view === v ? "var(--accent)" : "var(--bg-elevated)",
+              color: view === v ? "#fff" : "var(--text-secondary)",
+              padding: "8px 20px",
+              borderRadius: 6,
             }}
           >
-            {(Object.keys(ROLES) as RoleKey[]).map((k) => (
-              <button
-                key={k}
-                onClick={() => setRole(k)}
-                style={{
-                  background: role === k ? "#60a5fa" : "#27272a",
-                  color: role === k ? "#fafafa" : "#a1a1aa",
-                  padding: "8px 20px",
-                  borderRadius: 6,
-                }}
-              >
-                {ROLES[k].label}
-              </button>
-            ))}
-            <div style={{ marginLeft: "auto", fontSize: 13, color: "#a1a1aa" }}>
-              <span style={{ color: "#60a5fa", fontWeight: 600 }}>
-                {active.label}
-              </span>{" "}
-              <code style={{ fontSize: 12 }}>{truncAddr(active.address)}</code>
-              {balances[active.label] !== undefined && (
-                <span style={{ marginLeft: 12 }}>
-                  {fmt(balances[active.label])} sUSDS
-                </span>
-              )}
+            {v === "depositor" ? "Depositor" : v === "halo" ? "Halo" : "NFATs"}
+          </button>
+        ))}
+      </div>
+        <div
+          style={{
+            background: "var(--bg-card)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: 16,
+          }}
+        >
+          <SectionHeader>All NFATs ({allNfats.length})</SectionHeader>
+          {allNfats.length === 0 ? (
+            <div style={{ color: "var(--text-dim)", fontSize: 13, padding: 8 }}>
+              No NFATs minted yet
             </div>
-          </div>
-
-          {/* Facility Cards */}
-          <div
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>ID</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Facility</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Depositor</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Owner</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600, textAlign: "right" }}>Principal</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600, textAlign: "right" }}>Claimable</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allNfats.map((n) => {
+                  const rowKey = `${n.facility}-${n.tokenId}`;
+                  const isExpanded = expandedNfat === rowKey;
+                  const nfatEvents = events.filter(
+                    (e) => e.facility === n.facility && e.tokenId === n.tokenId,
+                  );
+                  return (
+                    <NfatTableRow
+                      key={rowKey}
+                      n={n}
+                      isExpanded={isExpanded}
+                      nfatEvents={nfatEvents}
+                      onToggle={() => setExpandedNfat(isExpanded ? null : rowKey)}
+                    />
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+        </>
+      ) : (
+        /* ── Depositor / Halo Tabs (with right panel) ─────────── */
+        <>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+          <h1 style={{ fontSize: 24, fontWeight: 700 }}>NFAT Dashboard</h1>
+          <button
+            onClick={toggleTheme}
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, 1fr)",
-              gap: 12,
-              marginBottom: 20,
+              background: "none",
+              color: "var(--text-muted)",
+              padding: "6px",
+              borderRadius: 6,
+              marginLeft: "auto",
+              lineHeight: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
             }}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
           >
-            {FACILITY_KEYS.map((key) => {
-              const m = FACILITY_META[key];
-              const isActive = activeFacility === key;
-              return (
+            {theme === "dark" ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5" />
+                <line x1="12" y1="1" x2="12" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="23" />
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                <line x1="1" y1="12" x2="3" y2="12" />
+                <line x1="21" y1="12" x2="23" y2="12" />
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            )}
+          </button>
+        </div>
+        <p style={{ color: "var(--text-secondary)", fontSize: 13, marginBottom: 20 }}>
+          Interactive walkthrough on local Anvil testchain
+        </p>
+
+        <div className="main-layout">
+          {/* ── Left Panel ───────────────────────────────────── */}
+          <div className="left-panel">
+            {/* Tab Switcher */}
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                marginBottom: 20,
+                padding: 16,
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+              }}
+            >
+              {(["depositor", "halo", "nfats"] as ViewKey[]).map((v) => (
                 <button
-                  key={key}
-                  onClick={() => setActiveFacility(key)}
+                  key={v}
+                  onClick={() => switchView(v)}
                   style={{
-                    background: isActive ? "#18181b" : "#0f0f12",
-                    border: isActive
-                      ? `2px solid ${m.color}`
-                      : "2px solid #27272a",
-                    borderRadius: 10,
-                    padding: 20,
-                    cursor: "pointer",
-                    textAlign: "left",
-                    transition: "all 0.15s",
+                    background: view === v ? "var(--accent)" : "var(--bg-elevated)",
+                    color: view === v ? "#fff" : "var(--text-secondary)",
+                    padding: "8px 20px",
+                    borderRadius: 6,
                   }}
                 >
-                  <div
+                  {v === "depositor" ? "Depositor" : v === "halo" ? "Halo" : "NFATs"}
+                </button>
+              ))}
+              <div style={{ marginLeft: "auto", fontSize: 13, color: "var(--text-secondary)" }}>
+                <span style={{ color: "var(--accent)", fontWeight: 600 }}>
+                  {ROLES[role].label}
+                </span>{" "}
+                <code style={{ fontSize: 12 }}>{truncAddr(ROLES[role].address)}</code>
+                {balances[ROLES[role].label] !== undefined && (
+                  <span style={{ marginLeft: 12 }}>
+                    {fmt(balances[ROLES[role].label])} sUSDS
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Facility Cards */}
+            <SectionHeader>NFAT Facilities</SectionHeader>
+            <div className="facility-grid">
+              {FACILITY_KEYS.map((key) => {
+                const m = FACILITY_META[key];
+                const isActive = activeFacility === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setActiveFacility(key)}
                     style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      marginBottom: 12,
+                      background: isActive ? "var(--bg-card)" : "var(--bg-inset)",
+                      border: isActive
+                        ? `1px solid ${m.color}`
+                        : "1px solid var(--border)",
+                      borderRadius: 10,
+                      padding: 20,
+                      cursor: "pointer",
+                      textAlign: "left",
+                      transition: "all 0.15s",
                     }}
                   >
-                    <span
-                      style={{
-                        width: 10,
-                        height: 10,
-                        borderRadius: "50%",
-                        background: m.color,
-                        display: "inline-block",
-                      }}
-                    />
-                    <span
-                      style={{
-                        fontWeight: 700,
-                        fontSize: 15,
-                        color: isActive ? "#fafafa" : "#a1a1aa",
-                      }}
-                    >
-                      {m.label}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "#71717a",
-                      marginBottom: 12,
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    {m.description}
-                  </div>
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr 1fr",
-                      gap: "6px 16px",
-                      fontSize: 12,
-                    }}
-                  >
-                    <div>
-                      <span style={{ color: "#52525b" }}>APY </span>
-                      <span style={{ color: isActive ? m.color : "#a1a1aa", fontWeight: 600 }}>
-                        {m.apy}
-                      </span>
-                    </div>
-                    <div>
-                      <span style={{ color: "#52525b" }}>Term </span>
-                      <span style={{ color: "#a1a1aa" }}>{m.term}</span>
-                    </div>
-                    <div>
-                      <span style={{ color: "#52525b" }}>Asset </span>
-                      <span style={{ color: "#a1a1aa" }}>sUSDS</span>
-                    </div>
-                    <div>
-                      <span style={{ color: "#52525b" }}>Contract </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
                       <span
                         style={{
-                          color: "#a1a1aa",
-                          fontFamily: "monospace",
-                          fontSize: 11,
+                          width: 10,
+                          height: 10,
+                          borderRadius: "50%",
+                          background: m.color,
+                          display: "inline-block",
+                        }}
+                      />
+                      <span
+                        style={{
+                          fontWeight: 700,
+                          fontSize: 15,
+                          color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
                         }}
                       >
-                        {truncAddr(FACILITIES[key])}
+                        {m.label}
                       </span>
                     </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.4 }}>
+                      {m.description}
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px", fontSize: 12 }}>
+                      <div>
+                        <span style={{ color: "var(--text-dim)" }}>APY </span>
+                        <span style={{ color: isActive ? m.color : "var(--text-secondary)", fontWeight: 600 }}>
+                          {m.apy}
+                        </span>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--text-dim)" }}>Term </span>
+                        <span style={{ color: "var(--text-secondary)" }}>{m.term}</span>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--text-dim)" }}>Asset </span>
+                        <span style={{ color: "var(--text-secondary)" }}>sUSDS</span>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--text-dim)" }}>Contract </span>
+                        <span style={{ color: "var(--text-secondary)", fontFamily: "monospace", fontSize: 11 }}>
+                          {truncAddr(FACILITIES[key])}
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
 
-          {/* Role Actions */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-            }}
-          >
-            {/* Depositor */}
-            {role === "depositor" && (
-              <>
-                <ActionCard title="Deposit" color={meta.color} facility={meta.label}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                    <LabeledInput label="Amount (sUSDS)" value={depositAmt} onChange={setDepositAmt} width={140} />
-                    <button onClick={doDeposit} disabled={loading} style={{ background: "#27272a", color: "#fafafa" }}>
-                      {loading ? "..." : "Deposit"}
-                    </button>
-                  </div>
-                </ActionCard>
-
-                <ActionCard title="Withdraw" color={meta.color} facility={meta.label}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                    <LabeledInput label="Amount (sUSDS)" value={withdrawAmt} onChange={setWithdrawAmt} width={140} />
-                    <button onClick={doWithdraw} disabled={loading} style={{ background: "#27272a", color: "#fafafa" }}>
-                      {loading ? "..." : "Withdraw"}
-                    </button>
-                  </div>
-                </ActionCard>
-
-                <ActionCard title="Claim" color={meta.color} facility={meta.label}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                    <LabeledInput label="Token ID" value={claimTokenId} onChange={setClaimTokenId} width={80} />
-                    <LabeledInput label="Amount (sUSDS)" value={claimAmt} onChange={setClaimAmt} width={140} />
-                    <button onClick={doClaim} disabled={loading} style={{ background: "#27272a", color: "#fafafa" }}>
-                      {loading ? "..." : "Claim"}
-                    </button>
-                  </div>
-                </ActionCard>
-              </>
-            )}
-
-            {/* Operator */}
-            {role === "operator" && (
-              <>
-                {/* Deposit Queue */}
+            {/* ── Depositor Pane ─────────────────────────────── */}
+            {view === "depositor" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {/* Deposit Queue Card */}
                 <div
                   style={{
-                    background: "#18181b",
-                    border: "1px solid #27272a",
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
                     borderRadius: 8,
                     padding: 16,
                   }}
                 >
-                  <SectionHeader>Deposit Queue — {meta.label}</SectionHeader>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+                    <span style={{ background: meta.color, width: 10, height: 10, borderRadius: "50%", display: "inline-block" }} />
+                    <span style={{ fontWeight: 600, fontSize: 15 }}>Deposit Queue</span>
+                    <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: "auto" }}>{meta.label}</span>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>Queued Balance</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)" }}>
+                        {depositorQueue ? fmt(depositorQueue.balance) : "0"}{" "}
+                        <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-secondary)" }}>sUSDS</span>
+                      </div>
+                    </div>
+                    <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                      <button
+                        onClick={() =>
+                          openModal("deposit", {
+                            maxAmount: balances["Depositor"] !== undefined
+                              ? formatUnits(balances["Depositor"], 18)
+                              : "0",
+                          })
+                        }
+                        disabled={loading}
+                        style={{ background: "var(--accent)", color: "#fff" }}
+                      >
+                        Deposit
+                      </button>
+                      <button
+                        onClick={() =>
+                          openModal("withdraw", {
+                            maxAmount: depositorQueue
+                              ? formatUnits(depositorQueue.balance, 18)
+                              : "0",
+                          })
+                        }
+                        disabled={loading || !depositorQueue || depositorQueue.balance === 0n}
+                        style={{ background: "var(--bg-elevated)", color: "var(--text-primary)" }}
+                      >
+                        Withdraw
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* My NFATs Card */}
+                <div
+                  style={{
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: 16,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                    <span style={{ background: meta.color, width: 10, height: 10, borderRadius: "50%", display: "inline-block" }} />
+                    <span style={{ fontWeight: 600, fontSize: 15 }}>My NFATs</span>
+                    <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: "auto" }}>{meta.label}</span>
+                  </div>
+
+                  {depositorNfats.length === 0 ? (
+                    <div style={{ color: "var(--text-dim)", fontSize: 13 }}>
+                      No NFATs for this facility
+                    </div>
+                  ) : (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
+                          <th style={{ padding: "4px 8px", fontWeight: 600 }}>ID</th>
+                          <th style={{ padding: "4px 8px", fontWeight: 600, textAlign: "right" }}>Principal</th>
+                          <th style={{ padding: "4px 8px", fontWeight: 600, textAlign: "right" }}>Claimable</th>
+                          <th style={{ padding: "4px 8px", fontWeight: 600, textAlign: "right" }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {depositorNfats.map((n) => (
+                          <tr key={n.tokenId} style={{ borderTop: "1px solid var(--border)" }}>
+                            <td style={{ padding: "8px", fontWeight: 600 }}>#{n.tokenId}</td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {fmt(n.principal)} sUSDS
+                            </td>
+                            <td
+                              style={{
+                                padding: "8px",
+                                textAlign: "right",
+                                fontFamily: "monospace",
+                                color: n.claimable > 0n ? "var(--positive)" : "var(--text-muted)",
+                              }}
+                            >
+                              {fmt(n.claimable)} sUSDS
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right" }}>
+                              <button
+                                onClick={() =>
+                                  openModal("claim", {
+                                    tokenId: n.tokenId,
+                                    maxAmount: formatUnits(n.claimable, 18),
+                                  })
+                                }
+                                disabled={loading || n.claimable === 0n}
+                                style={{
+                                  background: n.claimable > 0n ? "var(--accent)" : "var(--bg-elevated)",
+                                  color: n.claimable > 0n ? "#fff" : "var(--text-muted)",
+                                  fontSize: 12,
+                                  padding: "4px 12px",
+                                  borderRadius: 4,
+                                }}
+                              >
+                                Claim
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── Halo Pane ──────────────────────────────────── */}
+            {view === "halo" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {/* Deposit Queue Card */}
+                <div
+                  style={{
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: 16,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                    <span style={{ background: meta.color, width: 10, height: 10, borderRadius: "50%", display: "inline-block" }} />
+                    <span style={{ fontWeight: 600, fontSize: 15 }}>Deposit Queue</span>
+                    <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: "auto" }}>{meta.label}</span>
+                  </div>
+
                   {activeFacilityQueue.length === 0 ? (
-                    <div style={{ color: "#52525b", fontSize: 13 }}>
+                    <div style={{ color: "var(--text-dim)", fontSize: 13 }}>
                       No queued deposits
                     </div>
                   ) : (
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                       <thead>
-                        <tr style={{ color: "#71717a", textAlign: "left" }}>
+                        <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
                           <th style={{ padding: "4px 8px", fontWeight: 600 }}>Depositor</th>
-                          <th style={{ padding: "4px 8px", fontWeight: 600, textAlign: "right" }}>Queued (sUSDS)</th>
-                          <th style={{ padding: "4px 8px", fontWeight: 600 }}></th>
+                          <th style={{ padding: "4px 8px", fontWeight: 600, textAlign: "right" }}>Queued</th>
+                          <th style={{ padding: "4px 8px", fontWeight: 600, textAlign: "right" }}>Action</th>
                         </tr>
                       </thead>
                       <tbody>
                         {activeFacilityQueue.map((d) => (
-                          <tr key={d.depositor} style={{ borderTop: "1px solid #27272a" }}>
+                          <tr key={d.depositor} style={{ borderTop: "1px solid var(--border)" }}>
                             <td style={{ padding: "8px", fontFamily: "monospace", fontSize: 12 }}>
                               {truncAddr(d.depositor)}{" "}
-                              <span style={{ color: "#52525b", fontFamily: "sans-serif" }}>
+                              <span style={{ color: "var(--text-dim)", fontFamily: "sans-serif" }}>
                                 ({labelForAddr(d.depositor)})
                               </span>
                             </td>
-                            <td style={{ padding: "8px", fontFamily: "monospace", textAlign: "right", color: "#4ade80" }}>
-                              {fmt(d.balance)}
+                            <td style={{ padding: "8px", fontFamily: "monospace", textAlign: "right", color: "var(--positive)" }}>
+                              {fmt(d.balance)} sUSDS
                             </td>
                             <td style={{ padding: "8px", textAlign: "right" }}>
                               <button
-                                onClick={() => {
-                                  setIssueDepositor(d.depositor);
-                                  setIssueAmt(formatUnits(d.balance, 18));
-                                }}
+                                onClick={() =>
+                                  openModal("issue", {
+                                    depositor: d.depositor,
+                                    prefillAmount: formatUnits(d.balance, 18),
+                                    maxAmount: formatUnits(d.balance, 18),
+                                  })
+                                }
+                                disabled={loading}
                                 style={{
-                                  background: "#27272a",
-                                  color: "#a1a1aa",
-                                  fontSize: 11,
-                                  padding: "4px 10px",
+                                  background: "var(--accent)",
+                                  color: "#fff",
+                                  fontSize: 12,
+                                  padding: "4px 12px",
                                   borderRadius: 4,
                                 }}
                               >
-                                Use
+                                Issue NFAT
                               </button>
                             </td>
                           </tr>
@@ -717,338 +977,505 @@ export default function Home() {
                   )}
                 </div>
 
-                <ActionCard title="Issue NFAT" color={meta.color} facility={meta.label}>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
-                    <LabeledInput label="Depositor Address" value={issueDepositor} onChange={setIssueDepositor} width={320} />
-                    <LabeledInput label="Amount (sUSDS)" value={issueAmt} onChange={setIssueAmt} width={140} />
-                    <LabeledInput label="Token ID" value={issueTokenId} onChange={setIssueTokenId} width={80} />
-                    <button onClick={doIssue} disabled={loading} style={{ background: "#27272a", color: "#fafafa" }}>
-                      {loading ? "..." : "Issue"}
-                    </button>
-                  </div>
-                </ActionCard>
-              </>
-            )}
-
-            {/* Halo */}
-            {role === "halo" && (
-              <ActionCard title="Fund" color={meta.color} facility={meta.label}>
-                <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                  <LabeledInput label="Token ID" value={fundTokenId} onChange={setFundTokenId} width={80} />
-                  <LabeledInput label="Amount (sUSDS)" value={fundAmt} onChange={setFundAmt} width={140} />
-                  <button onClick={doFund} disabled={loading} style={{ background: "#27272a", color: "#fafafa" }}>
-                    {loading ? "..." : "Fund"}
-                  </button>
-                </div>
-              </ActionCard>
-            )}
-          </div>
-        </div>
-
-        {/* ── Right Panel ────────────────────────────────────── */}
-        <div
-          style={{
-            width: 400,
-            flexShrink: 0,
-            display: "flex",
-            flexDirection: "column",
-            gap: 0,
-          }}
-        >
-          {/* Tabs */}
-          <div style={{ display: "flex", marginBottom: 0 }}>
-            {(["nfats", "events"] as const).map((tab) => {
-              const isActive =
-                selectedNfat === null ? rightTab === tab : false;
-              return (
-                <button
-                  key={tab}
-                  onClick={() => {
-                    setRightTab(tab);
-                    setSelectedNfat(null);
-                  }}
-                  style={{
-                    flex: 1,
-                    padding: "10px 0",
-                    background: isActive ? "#18181b" : "#0f0f12",
-                    color: isActive ? "#fafafa" : "#71717a",
-                    borderBottom: isActive
-                      ? "2px solid #60a5fa"
-                      : "2px solid transparent",
-                    fontWeight: isActive ? 600 : 400,
-                    fontSize: 13,
-                    textTransform: "uppercase",
-                    letterSpacing: 1,
-                  }}
-                >
-                  {tab === "nfats" ? `NFATs (${allNfats.length})` : `Events (${events.length})`}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Right pane content */}
-          <div
-            style={{
-              background: "#18181b",
-              borderRadius: "0 0 8px 8px",
-              padding: 16,
-              minHeight: 400,
-              maxHeight: "calc(100vh - 200px)",
-              overflowY: "auto",
-            }}
-          >
-            {/* NFAT Detail View */}
-            {selectedNfat && selectedNfatInfo ? (
-              <div>
-                <button
-                  onClick={() => setSelectedNfat(null)}
-                  style={{
-                    background: "none",
-                    color: "#60a5fa",
-                    fontSize: 12,
-                    padding: 0,
-                    marginBottom: 12,
-                    cursor: "pointer",
-                  }}
-                >
-                  &larr; Back to list
-                </button>
-
+                {/* Facility NFATs Card */}
                 <div
                   style={{
-                    borderLeft: `3px solid ${FACILITY_META[selectedNfatInfo.facility].color}`,
-                    paddingLeft: 12,
-                    marginBottom: 16,
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: 16,
                   }}
                 >
-                  <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4, color: "#fafafa" }}>
-                    NFAT #{selectedNfatInfo.tokenId}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                    <span style={{ background: meta.color, width: 10, height: 10, borderRadius: "50%", display: "inline-block" }} />
+                    <span style={{ fontWeight: 600, fontSize: 15 }}>Facility NFATs</span>
+                    <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: "auto" }}>{meta.label}</span>
                   </div>
+
+                  {activeFacilityNfats.length === 0 ? (
+                    <div style={{ color: "var(--text-dim)", fontSize: 13 }}>
+                      No NFATs for this facility
+                    </div>
+                  ) : (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
+                          <th style={{ padding: "4px 8px", fontWeight: 600 }}>ID</th>
+                          <th style={{ padding: "4px 8px", fontWeight: 600 }}>Depositor</th>
+                          <th style={{ padding: "4px 8px", fontWeight: 600, textAlign: "right" }}>Principal</th>
+                          <th style={{ padding: "4px 8px", fontWeight: 600, textAlign: "right" }}>Claimable</th>
+                          <th style={{ padding: "4px 8px", fontWeight: 600, textAlign: "right" }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeFacilityNfats.map((n) => (
+                          <tr key={n.tokenId} style={{ borderTop: "1px solid var(--border)" }}>
+                            <td style={{ padding: "8px", fontWeight: 600 }}>#{n.tokenId}</td>
+                            <td style={{ padding: "8px", fontFamily: "monospace", fontSize: 12 }}>
+                              {truncAddr(n.depositor)}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {fmt(n.principal)} sUSDS
+                            </td>
+                            <td
+                              style={{
+                                padding: "8px",
+                                textAlign: "right",
+                                fontFamily: "monospace",
+                                color: n.claimable > 0n ? "var(--positive)" : "var(--text-muted)",
+                              }}
+                            >
+                              {fmt(n.claimable)} sUSDS
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right" }}>
+                              <button
+                                onClick={() =>
+                                  openModal("fund", {
+                                    tokenId: n.tokenId,
+                                    maxAmount: balances["Halo"] !== undefined
+                                      ? formatUnits(balances["Halo"], 18)
+                                      : "0",
+                                  })
+                                }
+                                disabled={loading}
+                                style={{
+                                  background: "var(--accent)",
+                                  color: "#fff",
+                                  fontSize: 12,
+                                  padding: "4px 12px",
+                                  borderRadius: 4,
+                                }}
+                              >
+                                Fund
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── Right Panel ──────────────────────────────────── */}
+          <div className="right-panel">
+            {/* Balances Card (on top) */}
+            <div
+              style={{
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: 16,
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <SectionHeader style={{ margin: 0 }}>Balances</SectionHeader>
+                <button
+                  onClick={() => refresh()}
+                  style={{
+                    background: "var(--bg-elevated)",
+                    color: "var(--text-secondary)",
+                    fontSize: 12,
+                    padding: "4px 12px",
+                    borderRadius: 4,
+                  }}
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {["Depositor", "Halo"].map((label) => (
+                <div
+                  key={label}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: 4,
+                    fontSize: 12,
+                  }}
+                >
+                  <span style={{ color: "var(--text-muted)" }}>{label}</span>
+                  <span style={{ color: "var(--text-secondary)" }}>
+                    {balances[label] !== undefined ? fmt(balances[label]) : "\u2014"} sUSDS
+                  </span>
+                </div>
+              ))}
+              <div style={{ borderTop: "1px solid var(--border-subtle)", marginTop: 6, paddingTop: 6 }}>
+                {FACILITY_KEYS.map((key) => (
                   <div
+                    key={key}
                     style={{
-                      fontSize: 12,
-                      color: FACILITY_META[selectedNfatInfo.facility].color,
-                      fontWeight: 600,
-                      marginBottom: 12,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: 3,
+                      fontSize: 11,
                     }}
                   >
-                    {FACILITY_META[selectedNfatInfo.facility].label}
+                    <span style={{ color: FACILITY_META[key].color }}>
+                      {FACILITY_META[key].label}
+                    </span>
+                    <span style={{ color: "var(--text-secondary)" }}>
+                      {balances[`Facility:${key}`] !== undefined
+                        ? fmt(balances[`Facility:${key}`])
+                        : "\u2014"}{" "}
+                      sUSDS
+                    </span>
                   </div>
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
-                  <DetailStat label="Principal" value={`${fmt(selectedNfatInfo.principal)} sUSDS`} />
-                  <DetailStat
-                    label="Claimable"
-                    value={`${fmt(selectedNfatInfo.claimable)} sUSDS`}
-                    highlight={selectedNfatInfo.claimable > 0n}
-                  />
-                  <DetailStat label="Depositor" value={truncAddr(selectedNfatInfo.depositor)} mono />
-                  <DetailStat label="Owner" value={truncAddr(selectedNfatInfo.owner)} mono />
-                  <DetailStat
-                    label="Minted"
-                    value={new Date(selectedNfatInfo.mintedAt * 1000).toLocaleString()}
-                  />
-                </div>
-
-                <SectionHeader>Event History</SectionHeader>
-                {selectedNfatEvents.length === 0 ? (
-                  <div style={{ color: "#52525b", fontSize: 12 }}>No events</div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {selectedNfatEvents.map((ev, i) => (
-                      <EventRow key={i} ev={ev} />
-                    ))}
-                  </div>
-                )}
+                ))}
               </div>
-            ) : rightTab === "nfats" ? (
-              /* All NFATs list */
-              allNfats.length === 0 ? (
-                <div style={{ color: "#52525b", fontSize: 13, padding: 8 }}>
-                  No NFATs minted yet
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {allNfats.map((n) => (
-                    <button
-                      key={`${n.facility}-${n.tokenId}`}
-                      onClick={() =>
-                        setSelectedNfat({
-                          facility: n.facility,
-                          tokenId: n.tokenId,
-                        })
-                      }
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        padding: "10px 12px",
-                        background: "#0f0f12",
-                        border: "1px solid #27272a",
-                        borderRadius: 6,
-                        cursor: "pointer",
-                        textAlign: "left",
-                        transition: "border-color 0.1s",
-                      }}
-                      onMouseOver={(e) =>
-                        (e.currentTarget.style.borderColor = "#3f3f46")
-                      }
-                      onMouseOut={(e) =>
-                        (e.currentTarget.style.borderColor = "#27272a")
-                      }
-                    >
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          background: FACILITY_META[n.facility].color,
-                          flexShrink: 0,
-                        }}
-                      />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "#fafafa" }}>
-                          NFAT #{n.tokenId}
-                          <span
-                            style={{
-                              fontSize: 11,
-                              color: FACILITY_META[n.facility].color,
-                              marginLeft: 8,
-                              fontWeight: 400,
-                            }}
-                          >
-                            {FACILITY_META[n.facility].label}
-                          </span>
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 11,
-                            color: "#71717a",
-                            marginTop: 2,
-                          }}
-                        >
-                          {fmt(n.principal)} sUSDS principal
-                          {n.claimable > 0n && (
-                            <span style={{ color: "#4ade80", marginLeft: 8 }}>
-                              {fmt(n.claimable)} claimable
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <span style={{ color: "#52525b", fontSize: 16 }}>&rsaquo;</span>
-                    </button>
-                  ))}
-                </div>
-              )
-            ) : (
-              /* Events log */
-              events.length === 0 ? (
-                <div style={{ color: "#52525b", fontSize: 13, padding: 8 }}>
+            </div>
+
+            {/* Events Card */}
+            <div
+              style={{
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: 16,
+                minHeight: 300,
+                maxHeight: "calc(100vh - 400px)",
+                overflowY: "auto",
+              }}
+            >
+              <SectionHeader>Events ({events.length})</SectionHeader>
+              {events.length === 0 ? (
+                <div style={{ color: "var(--text-dim)", fontSize: 13, padding: 8 }}>
                   No events yet
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   {[...events].reverse().map((ev, i) => (
-                    <EventRow
-                      key={i}
-                      ev={ev}
-                      onClick={
-                        ev.tokenId
-                          ? () =>
-                              setSelectedNfat({
-                                facility: ev.facility,
-                                tokenId: ev.tokenId!,
-                              })
-                          : undefined
-                      }
-                    />
+                    <EventRow key={i} ev={ev} />
                   ))}
                 </div>
-              )
-            )}
-          </div>
-
-          {/* Bottom bar: balances + refresh */}
-          <div
-            style={{
-              background: "#18181b",
-              borderRadius: 8,
-              padding: 16,
-              marginTop: 12,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 10,
-              }}
-            >
-              <SectionHeader style={{ margin: 0 }}>Balances</SectionHeader>
-              <button
-                onClick={() => refresh()}
-                style={{
-                  background: "#27272a",
-                  color: "#a1a1aa",
-                  fontSize: 12,
-                  padding: "4px 12px",
-                  borderRadius: 4,
-                }}
-              >
-                Refresh
-              </button>
-            </div>
-
-            {["Depositor", "Halo", "Recipient"].map((label) => (
-              <div
-                key={label}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  marginBottom: 4,
-                  fontSize: 12,
-                }}
-              >
-                <span style={{ color: "#71717a" }}>{label}</span>
-                <span style={{ color: "#a1a1aa" }}>
-                  {balances[label] !== undefined ? fmt(balances[label]) : "—"} sUSDS
-                </span>
-              </div>
-            ))}
-            <div style={{ borderTop: "1px solid #1e1e22", marginTop: 6, paddingTop: 6 }}>
-              {FACILITY_KEYS.map((key) => (
-                <div
-                  key={key}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: 3,
-                    fontSize: 11,
-                  }}
-                >
-                  <span style={{ color: FACILITY_META[key].color }}>
-                    {FACILITY_META[key].label}
-                  </span>
-                  <span style={{ color: "#a1a1aa" }}>
-                    {balances[`Facility:${key}`] !== undefined
-                      ? fmt(balances[`Facility:${key}`])
-                      : "—"}{" "}
-                    sUSDS
-                  </span>
-                </div>
-              ))}
+              )}
             </div>
           </div>
         </div>
-      </div>
+        </>
+      )}
+
+      {/* ── Modal ────────────────────────────────────────────── */}
+      {modal && (
+        <Modal title={modalTitles[modal] || ""} onClose={() => setModal(null)}>
+          {/* Deposit Modal */}
+          {modal === "deposit" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={modalAmount}
+                  onChange={(e) => setModalAmount(e.target.value)}
+                  placeholder="Amount (sUSDS)"
+                  style={{ flex: 1 }}
+                  autoFocus
+                />
+                <button
+                  onClick={() => setModalAmount(modalContext.maxAmount || "0")}
+                  style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", fontSize: 12, padding: "8px 12px" }}
+                >
+                  MAX
+                </button>
+              </div>
+              <button
+                onClick={doDeposit}
+                disabled={loading || !modalAmount}
+                style={{ background: "var(--accent)", color: "#fff", padding: "10px 16px" }}
+              >
+                {loading ? "Processing..." : "Deposit"}
+              </button>
+            </div>
+          )}
+
+          {/* Withdraw Modal */}
+          {modal === "withdraw" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={modalAmount}
+                  onChange={(e) => setModalAmount(e.target.value)}
+                  placeholder="Amount (sUSDS)"
+                  style={{ flex: 1 }}
+                  autoFocus
+                />
+                <button
+                  onClick={() => setModalAmount(modalContext.maxAmount || "0")}
+                  style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", fontSize: 12, padding: "8px 12px" }}
+                >
+                  MAX
+                </button>
+              </div>
+              <button
+                onClick={doWithdraw}
+                disabled={loading || !modalAmount}
+                style={{ background: "var(--accent)", color: "#fff", padding: "10px 16px" }}
+              >
+                {loading ? "Processing..." : "Withdraw"}
+              </button>
+            </div>
+          )}
+
+          {/* Claim Modal */}
+          {modal === "claim" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={modalAmount}
+                  onChange={(e) => setModalAmount(e.target.value)}
+                  placeholder="Amount (sUSDS)"
+                  style={{ flex: 1 }}
+                  autoFocus
+                />
+                <button
+                  onClick={() => setModalAmount(modalContext.maxAmount || "0")}
+                  style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", fontSize: 12, padding: "8px 12px" }}
+                >
+                  MAX
+                </button>
+              </div>
+              <button
+                onClick={doClaim}
+                disabled={loading || !modalAmount}
+                style={{ background: "var(--accent)", color: "#fff", padding: "10px 16px" }}
+              >
+                {loading ? "Processing..." : "Claim"}
+              </button>
+            </div>
+          )}
+
+          {/* Issue Modal */}
+          {modal === "issue" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                Depositor:{" "}
+                <code style={{ color: "var(--text-secondary)" }}>
+                  {modalContext.depositor ? truncAddr(modalContext.depositor) : ""}
+                </code>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={modalAmount}
+                  onChange={(e) => setModalAmount(e.target.value)}
+                  placeholder="Amount (sUSDS)"
+                  style={{ flex: 1 }}
+                />
+                <button
+                  onClick={() => setModalAmount(modalContext.maxAmount || "0")}
+                  style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", fontSize: 12, padding: "8px 12px" }}
+                >
+                  MAX
+                </button>
+              </div>
+              <input
+                value={modalTokenId}
+                onChange={(e) => setModalTokenId(e.target.value)}
+                placeholder="Token ID"
+                autoFocus
+              />
+              <button
+                onClick={doIssue}
+                disabled={loading || !modalAmount || !modalTokenId}
+                style={{ background: "var(--accent)", color: "#fff", padding: "10px 16px" }}
+              >
+                {loading ? "Processing..." : "Issue NFAT"}
+              </button>
+            </div>
+          )}
+
+          {/* Fund Modal */}
+          {modal === "fund" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={modalAmount}
+                  onChange={(e) => setModalAmount(e.target.value)}
+                  placeholder="Amount (sUSDS)"
+                  style={{ flex: 1 }}
+                  autoFocus
+                />
+                <button
+                  onClick={() => setModalAmount(modalContext.maxAmount || "0")}
+                  style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", fontSize: 12, padding: "8px 12px" }}
+                >
+                  MAX
+                </button>
+              </div>
+              <button
+                onClick={doFund}
+                disabled={loading || !modalAmount}
+                style={{ background: "var(--accent)", color: "#fff", padding: "10px 16px" }}
+              >
+                {loading ? "Processing..." : "Fund"}
+              </button>
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }
 
 // ── Subcomponents ───────────────────────────────────────────────
+
+function Modal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 16,
+          }}
+        >
+          <h3 style={{ fontSize: 16, fontWeight: 700 }}>{title}</h3>
+          <button
+            onClick={onClose}
+            style={{
+              background: "none",
+              color: "var(--text-muted)",
+              fontSize: 18,
+              padding: "0 4px",
+              lineHeight: 1,
+            }}
+          >
+            {"\u2715"}
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function NfatTableRow({
+  n,
+  isExpanded,
+  nfatEvents,
+  onToggle,
+}: {
+  n: NfatInfo;
+  isExpanded: boolean;
+  nfatEvents: EventEntry[];
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <tr
+        onClick={onToggle}
+        style={{
+          borderTop: "1px solid var(--border)",
+          cursor: "pointer",
+          background: isExpanded ? "var(--bg-inset)" : "transparent",
+        }}
+      >
+        <td style={{ padding: "8px", fontWeight: 600 }}>#{n.tokenId}</td>
+        <td style={{ padding: "8px" }}>
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: FACILITY_META[n.facility].color,
+              display: "inline-block",
+              marginRight: 6,
+            }}
+          />
+          {FACILITY_META[n.facility].label}
+        </td>
+        <td style={{ padding: "8px", fontFamily: "monospace", fontSize: 12 }}>
+          {truncAddr(n.depositor)}{" "}
+          <span style={{ color: "var(--text-dim)", fontFamily: "sans-serif" }}>
+            ({labelForAddr(n.depositor)})
+          </span>
+        </td>
+        <td style={{ padding: "8px", fontFamily: "monospace", fontSize: 12 }}>
+          {truncAddr(n.owner)}{" "}
+          <span style={{ color: "var(--text-dim)", fontFamily: "sans-serif" }}>
+            ({labelForAddr(n.owner)})
+          </span>
+        </td>
+        <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+          {fmt(n.principal)} sUSDS
+        </td>
+        <td
+          style={{
+            padding: "8px",
+            textAlign: "right",
+            fontFamily: "monospace",
+            color: n.claimable > 0n ? "var(--positive)" : "var(--text-muted)",
+          }}
+        >
+          {fmt(n.claimable)} sUSDS
+        </td>
+      </tr>
+      {isExpanded && (
+        <tr>
+          <td colSpan={6} style={{ padding: "12px 16px", background: "var(--bg-inset)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+              <div style={{ background: "var(--bg-card)", borderRadius: 6, padding: "8px 10px" }}>
+                <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", marginBottom: 4 }}>
+                  Principal
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                  {fmt(n.principal)} sUSDS
+                </div>
+              </div>
+              <div style={{ background: "var(--bg-card)", borderRadius: 6, padding: "8px 10px" }}>
+                <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", marginBottom: 4 }}>
+                  Claimable
+                </div>
+                <div style={{ fontSize: 13, color: n.claimable > 0n ? "var(--positive)" : "var(--text-secondary)" }}>
+                  {fmt(n.claimable)} sUSDS
+                </div>
+              </div>
+              <div style={{ background: "var(--bg-card)", borderRadius: 6, padding: "8px 10px" }}>
+                <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", marginBottom: 4 }}>
+                  Minted
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                  {new Date(n.mintedAt * 1000).toLocaleString()}
+                </div>
+              </div>
+            </div>
+            <h4
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: "var(--text-muted)",
+                textTransform: "uppercase",
+                letterSpacing: 1,
+                marginBottom: 6,
+              }}
+            >
+              Event History
+            </h4>
+            {nfatEvents.length === 0 ? (
+              <div style={{ color: "var(--text-dim)", fontSize: 12 }}>No events</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {nfatEvents.map((ev, i) => (
+                  <EventRow key={i} ev={ev} />
+                ))}
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
 
 function EventRow({
   ev,
@@ -1062,19 +1489,19 @@ function EventRow({
   if (ev.action === "Deposited" || ev.action === "Withdrawn") {
     const amt = ev.args.amount as bigint;
     const dep = ev.args.depositor as string;
-    detail = `${labelForAddr(dep)} — ${fmt(amt)} sUSDS`;
+    detail = `${labelForAddr(dep)} \u2014 ${fmt(amt)} sUSDS`;
   } else if (ev.action === "Issued") {
     const amt = ev.args.amount as bigint;
     const dep = ev.args.depositor as string;
-    detail = `#${ev.tokenId} to ${labelForAddr(dep)} — ${fmt(amt)} sUSDS`;
+    detail = `#${ev.tokenId} to ${labelForAddr(dep)} \u2014 ${fmt(amt)} sUSDS`;
   } else if (ev.action === "Funded") {
     const amt = ev.args.amount as bigint;
     const funder = ev.args.funder as string;
-    detail = `#${ev.tokenId} by ${labelForAddr(funder)} — ${fmt(amt)} sUSDS`;
+    detail = `#${ev.tokenId} by ${labelForAddr(funder)} \u2014 ${fmt(amt)} sUSDS`;
   } else if (ev.action === "Claimed") {
     const amt = ev.args.amount as bigint;
     const claimer = ev.args.claimer as string;
-    detail = `#${ev.tokenId} by ${labelForAddr(claimer)} — ${fmt(amt)} sUSDS`;
+    detail = `#${ev.tokenId} by ${labelForAddr(claimer)} \u2014 ${fmt(amt)} sUSDS`;
   }
 
   return (
@@ -1086,7 +1513,7 @@ function EventRow({
         gap: 8,
         padding: "6px 8px",
         borderRadius: 4,
-        background: "#0f0f12",
+        background: "var(--bg-inset)",
         cursor: onClick ? "pointer" : "default",
         fontSize: 12,
       }}
@@ -1100,120 +1527,13 @@ function EventRow({
           flexShrink: 0,
         }}
       />
-      <span style={{ color: "#fafafa", fontWeight: 600, width: 72, flexShrink: 0 }}>
+      <span style={{ color: "var(--text-primary)", fontWeight: 600, width: 72, flexShrink: 0 }}>
         {ev.action}
       </span>
-      <span style={{ color: "#a1a1aa", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+      <span style={{ color: "var(--text-secondary)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {detail}
       </span>
-      {onClick && <span style={{ color: "#52525b", fontSize: 14 }}>&rsaquo;</span>}
-    </div>
-  );
-}
-
-function DetailStat({
-  label,
-  value,
-  mono,
-  highlight,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  highlight?: boolean;
-}) {
-  return (
-    <div
-      style={{
-        background: "#0f0f12",
-        borderRadius: 6,
-        padding: "8px 10px",
-      }}
-    >
-      <div style={{ fontSize: 10, color: "#52525b", textTransform: "uppercase", marginBottom: 4 }}>
-        {label}
-      </div>
-      <div
-        style={{
-          fontSize: 13,
-          color: highlight ? "#4ade80" : "#d4d4d8",
-          fontFamily: mono ? "monospace" : "inherit",
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function ActionCard({
-  title,
-  color,
-  facility,
-  children,
-}: {
-  title: string;
-  color: string;
-  facility: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      style={{
-        background: "#18181b",
-        border: "1px solid #27272a",
-        borderRadius: 8,
-        padding: 16,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          marginBottom: 12,
-        }}
-      >
-        <span
-          style={{
-            background: color,
-            width: 10,
-            height: 10,
-            borderRadius: "50%",
-            display: "inline-block",
-          }}
-        />
-        <span style={{ fontWeight: 600, fontSize: 15 }}>{title}</span>
-        <span style={{ fontSize: 11, color: "#52525b", marginLeft: "auto" }}>
-          {facility}
-        </span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function LabeledInput({
-  label,
-  value,
-  onChange,
-  width,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  width: number;
-}) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <label style={{ fontSize: 11, color: "#71717a", fontWeight: 500 }}>
-        {label}
-      </label>
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ width }}
-      />
+      {onClick && <span style={{ color: "var(--text-dim)", fontSize: 14 }}>&rsaquo;</span>}
     </div>
   );
 }
@@ -1231,7 +1551,7 @@ function SectionHeader({
         fontSize: 12,
         fontWeight: 700,
         marginBottom: 10,
-        color: "#71717a",
+        color: "var(--text-muted)",
         textTransform: "uppercase",
         letterSpacing: 1,
         ...style,
