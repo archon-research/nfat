@@ -500,7 +500,7 @@ export default function Home() {
       {view === "nfats" ? (
         <>
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700 }}>NFAT Dashboard</h1>
         <button
           onClick={toggleTheme}
@@ -616,7 +616,7 @@ export default function Home() {
         /* ── Depositor / Halo Tabs (with right panel) ─────────── */
         <>
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
           <h1 style={{ fontSize: 24, fontWeight: 700 }}>NFAT Dashboard</h1>
           <button
             onClick={toggleTheme}
@@ -652,9 +652,6 @@ export default function Home() {
             )}
           </button>
         </div>
-        <p style={{ color: "var(--text-secondary)", fontSize: 13, marginBottom: 20 }}>
-          Interactive walkthrough on local Anvil testchain
-        </p>
 
         <div className="main-layout">
           {/* ── Left Panel ───────────────────────────────────── */}
