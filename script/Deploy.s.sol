@@ -28,15 +28,9 @@ contract Deploy is Script {
         token.mint(OPERATOR, amount);
 
         // 3. Deploy 3 NFATFacility instances
-        NFATFacility senior = new NFATFacility(
-            "SeniorSecured", ADMIN, address(token), RECIPIENT, address(0), OPERATOR
-        );
-        NFATFacility mezzanine = new NFATFacility(
-            "Mezzanine", ADMIN, address(token), RECIPIENT, address(0), OPERATOR
-        );
-        NFATFacility structured = new NFATFacility(
-            "Structured", ADMIN, address(token), RECIPIENT, address(0), OPERATOR
-        );
+        NFATFacility senior = new NFATFacility("SeniorSecured", ADMIN, address(token), RECIPIENT, address(0), OPERATOR);
+        NFATFacility mezzanine = new NFATFacility("Mezzanine", ADMIN, address(token), RECIPIENT, address(0), OPERATOR);
+        NFATFacility structured = new NFATFacility("Structured", ADMIN, address(token), RECIPIENT, address(0), OPERATOR);
 
         console.log("SeniorSecured:", address(senior));
         console.log("Mezzanine:", address(mezzanine));
