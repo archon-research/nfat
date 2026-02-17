@@ -713,6 +713,7 @@ export default function Home() {
                         : "1px solid var(--border)",
                       borderRadius: 10,
                       padding: 20,
+                      minHeight: 160,
                       cursor: "pointer",
                       textAlign: "left",
                       transition: "all 0.15s",

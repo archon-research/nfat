@@ -15,7 +15,7 @@ trap cleanup INT TERM
 
 # ── 1. Start Anvil ──────────────────────────────────────────────
 echo "Starting anvil..."
-anvil --silent &
+anvil &
 ANVIL_PID=$!
 
 # Wait until RPC is up
