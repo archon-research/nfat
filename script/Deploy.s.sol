@@ -10,6 +10,7 @@ contract Deploy is Script {
     address constant ADMIN = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
     address constant OPERATOR = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
     address constant DEPOSITOR = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC;
+    address constant DEPOSITOR2 = 0x90F79bf6EB2c4f870365E785982E1f101E93b906;
     address constant RECIPIENT = OPERATOR; // Halo acts as operator + recipient in this demo
 
     // Anvil default private key for account 0
@@ -22,9 +23,10 @@ contract Deploy is Script {
         MockERC20 token = new MockERC20();
         console.log("MockERC20:", address(token));
 
-        // 2. Mint 1M tokens to Depositor and Operator (Halo)
-        uint256 amount = 1_000_000e18;
+        // 2. Mint 500M tokens to Depositors and Operator (Halo)
+        uint256 amount = 500_000_000e18;
         token.mint(DEPOSITOR, amount);
+        token.mint(DEPOSITOR2, amount);
         token.mint(OPERATOR, amount);
 
         // 3. Deploy 3 NFATFacility instances
@@ -46,9 +48,17 @@ contract Deploy is Script {
         token.approve(address(structured), type(uint256).max);
         vm.stopBroadcast();
 
-        // 5. Approve all 3 facilities for Depositor
+        // 5. Approve all 3 facilities for Depositor (Prime 1)
         uint256 depositorKey = 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a;
         vm.startBroadcast(depositorKey);
+        token.approve(address(senior), type(uint256).max);
+        token.approve(address(mezzanine), type(uint256).max);
+        token.approve(address(structured), type(uint256).max);
+        vm.stopBroadcast();
+
+        // 6. Approve all 3 facilities for Depositor2 (Prime 2)
+        uint256 depositor2Key = 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6;
+        vm.startBroadcast(depositor2Key);
         token.approve(address(senior), type(uint256).max);
         token.approve(address(mezzanine), type(uint256).max);
         token.approve(address(structured), type(uint256).max);

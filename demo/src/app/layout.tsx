@@ -64,7 +64,7 @@ export default function RootLayout({
           button:disabled { opacity: 0.4; cursor: not-allowed; }
           .main-layout { display: flex; gap: 20px; }
           .left-panel { flex: 1; min-width: 0; }
-          .right-panel { width: 400px; flex-shrink: 0; display: flex; flex-direction: column; gap: 0; }
+          .right-panel { flex: 0 1 340px; min-width: 260px; display: flex; flex-direction: column; gap: 0; }
           .facility-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
           .modal-overlay { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 1000; }
           .modal-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; min-width: 360px; max-width: 480px; width: 100%; }

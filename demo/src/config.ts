@@ -20,10 +20,15 @@ export const config = createConfig({
 });
 
 export const ROLES = {
-  depositor: {
-    label: "Depositor",
+  prime1: {
+    label: "Prime 1",
     address: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC" as `0x${string}`,
     key: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a" as `0x${string}`,
+  },
+  prime2: {
+    label: "Prime 2",
+    address: "0x90F79bf6EB2c4f870365E785982E1f101E93b906" as `0x${string}`,
+    key: "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6" as `0x${string}`,
   },
   halo: {
     label: "Halo",
