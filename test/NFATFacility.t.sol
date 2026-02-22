@@ -140,7 +140,7 @@ contract NFATFacilityTest is Test {
         facility.issue(depositor, 0, 1);
     }
 
-    function testStopBlocksFund() public {
+    function testStopBlocksRepay() public {
         vm.prank(operator);
         facility.issue(depositor, 0, 42);
 
@@ -150,7 +150,7 @@ contract NFATFacilityTest is Test {
         vm.startPrank(depositor);
         asset.approve(address(facility), 1e18);
         vm.expectRevert("NFATFacility/stopped");
-        facility.fund(42, 1e18);
+        facility.repay(42, 1e18);
         vm.stopPrank();
     }
 
@@ -160,7 +160,7 @@ contract NFATFacilityTest is Test {
 
         asset.mint(address(this), 1e18);
         asset.approve(address(facility), 1e18);
-        facility.fund(42, 1e18);
+        facility.repay(42, 1e18);
 
         facility.stop();
 
@@ -236,11 +236,6 @@ contract NFATFacilityTest is Test {
 
         assertEq(facility.deposits(depositor), dep - clm);
         assertEq(facility.ownerOf(tokenId), depositor);
-
-        (, address dataDepositor, uint256 principal) = facility.nfatData(tokenId);
-        assertEq(dataDepositor, depositor);
-        assertEq(principal, clm);
-
         assertEq(asset.balanceOf(pau), clm);
     }
 
@@ -251,11 +246,6 @@ contract NFATFacilityTest is Test {
         assertEq(facility.ownerOf(99), depositor);
         assertEq(facility.deposits(depositor), 0);
         assertEq(asset.balanceOf(facility.recipient()), 0);
-
-        (uint48 mintedAt, address dataDepositor, uint256 principal) = facility.nfatData(99);
-        assertEq(dataDepositor, depositor);
-        assertEq(principal, 0);
-        assertTrue(mintedAt > 0);
     }
 
     function testIssueInsufficientReverts() public {
@@ -276,9 +266,9 @@ contract NFATFacilityTest is Test {
         facility.issue(depositor, 0, 5);
     }
 
-    // ── fund ────────────────────────────────────────────────────────────
+    // ── repay ───────────────────────────────────────────────────────────
 
-    function testFundByNonOperator() public {
+    function testRepayByNonOperator() public {
         vm.prank(operator);
         facility.issue(depositor, 0, 42);
 
@@ -288,24 +278,24 @@ contract NFATFacilityTest is Test {
 
         vm.startPrank(anyone);
         asset.approve(address(facility), amount);
-        facility.fund(42, amount);
+        facility.repay(42, amount);
         vm.stopPrank();
 
         assertEq(facility.claimable(42), amount);
         assertEq(asset.balanceOf(address(facility)), amount);
     }
 
-    function testFundMissingTokenReverts() public {
+    function testRepayMissingTokenReverts() public {
         vm.expectRevert("NFATFacility/token-missing");
-        facility.fund(123, 1);
+        facility.repay(123, 1);
     }
 
-    function testFundZeroReverts() public {
+    function testRepayZeroReverts() public {
         vm.prank(operator);
         facility.issue(depositor, 0, 55);
 
         vm.expectRevert("NFATFacility/amount-zero");
-        facility.fund(55, 0);
+        facility.repay(55, 0);
     }
 
     // ── claim ───────────────────────────────────────────────────────────
@@ -328,7 +318,7 @@ contract NFATFacilityTest is Test {
 
         vm.startPrank(operator);
         asset.approve(address(facility), redemption);
-        facility.fund(7, redemption);
+        facility.repay(7, redemption);
         vm.stopPrank();
 
         vm.prank(depositor);
@@ -372,22 +362,19 @@ contract NFATFacilityTest is Test {
     function testIdentityCheckEnforced() public {
         NFATFacility restricted = new NFATFacility("Test", address(asset), pau, address(identityNetwork), operator);
 
+        // Deposit succeeds without membership (no deposit gating)
         asset.mint(depositor, 100e18);
         vm.startPrank(depositor);
         asset.approve(address(restricted), 100e18);
-        vm.expectRevert("NFATFacility/not-member");
         restricted.deposit(10e18);
         vm.stopPrank();
 
         identityNetwork.setMember(depositor, true);
 
-        vm.startPrank(depositor);
-        restricted.deposit(10e18);
-        vm.stopPrank();
-
         vm.prank(operator);
         restricted.issue(depositor, 10e18, 100);
 
+        // Transfer gated by identity network
         address receiver = address(0xBEEF);
         vm.prank(depositor);
         vm.expectRevert("NFATFacility/not-member");
@@ -546,68 +533,68 @@ contract NFATFacilityTest is Test {
         facility.rescueDeposit(depositor, address(0xBEEF), 0);
     }
 
-    // ── rescueFunding ─────────────────────────────────────────────────────
+    // ── rescueRepayment ──────────────────────────────────────────────────
 
-    function testRescueFunding() public {
+    function testRescueRepayment() public {
         vm.prank(operator);
         facility.issue(depositor, 0, 1);
 
-        uint256 fundAmount = 100e18;
-        asset.mint(operator, fundAmount);
+        uint256 repayAmount = 100e18;
+        asset.mint(operator, repayAmount);
         vm.startPrank(operator);
-        asset.approve(address(facility), fundAmount);
-        facility.fund(1, fundAmount);
+        asset.approve(address(facility), repayAmount);
+        facility.repay(1, repayAmount);
         vm.stopPrank();
 
         address recv = address(0xBEEF);
-        facility.rescueFunding(1, recv, 40e18);
+        facility.rescueRepayment(1, recv, 40e18);
 
         assertEq(facility.claimable(1), 60e18);
         assertEq(asset.balanceOf(recv), 40e18);
     }
 
-    function testFuzz_RescueFunding(uint96 fundAmt, uint96 withdrawAmt) public {
-        uint256 fund_ = bound(uint256(fundAmt), 1, 1_000_000e18);
-        uint256 withdraw_ = bound(uint256(withdrawAmt), 1, fund_);
+    function testFuzz_RescueRepayment(uint96 repayAmt, uint96 withdrawAmt) public {
+        uint256 repay_ = bound(uint256(repayAmt), 1, 1_000_000e18);
+        uint256 withdraw_ = bound(uint256(withdrawAmt), 1, repay_);
 
         vm.prank(operator);
         facility.issue(depositor, 0, 1);
 
-        asset.mint(operator, fund_);
+        asset.mint(operator, repay_);
         vm.startPrank(operator);
-        asset.approve(address(facility), fund_);
-        facility.fund(1, fund_);
+        asset.approve(address(facility), repay_);
+        facility.repay(1, repay_);
         vm.stopPrank();
 
         address recv = address(0xBEEF);
-        facility.rescueFunding(1, recv, withdraw_);
+        facility.rescueRepayment(1, recv, withdraw_);
 
-        assertEq(facility.claimable(1), fund_ - withdraw_);
+        assertEq(facility.claimable(1), repay_ - withdraw_);
         assertEq(asset.balanceOf(recv), withdraw_);
     }
 
-    function testRescueFundingRequiresAuth() public {
+    function testRescueRepaymentRequiresAuth() public {
         vm.prank(address(0xF00D));
         vm.expectRevert("NFATFacility/not-authorized");
-        facility.rescueFunding(1, address(0xBEEF), 1);
+        facility.rescueRepayment(1, address(0xBEEF), 1);
     }
 
-    function testRescueFundingInsufficientReverts() public {
+    function testRescueRepaymentInsufficientReverts() public {
         vm.prank(operator);
         facility.issue(depositor, 0, 1);
 
         vm.expectRevert("NFATFacility/insufficient-claimable");
-        facility.rescueFunding(1, address(0xBEEF), 1);
+        facility.rescueRepayment(1, address(0xBEEF), 1);
     }
 
-    function testRescueFundingToZeroReverts() public {
+    function testRescueRepaymentToZeroReverts() public {
         vm.expectRevert("NFATFacility/to-zero-address");
-        facility.rescueFunding(1, address(0), 1);
+        facility.rescueRepayment(1, address(0), 1);
     }
 
-    function testRescueFundingZeroAmountReverts() public {
+    function testRescueRepaymentZeroAmountReverts() public {
         vm.expectRevert("NFATFacility/amount-zero");
-        facility.rescueFunding(1, address(0xBEEF), 0);
+        facility.rescueRepayment(1, address(0xBEEF), 0);
     }
 
     // ── supportsInterface ───────────────────────────────────────────────

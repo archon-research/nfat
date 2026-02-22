@@ -13,14 +13,6 @@ interface IdentityNetworkLike {
 }
 
 contract NFATFacility is ERC721 {
-    // --- Structs ---
-
-    struct NFATData {
-        uint48 mintedAt;
-        address depositor;
-        uint256 principal;
-    }
-
     // --- Storage variables ---
 
     mapping(address usr => uint256 allowed) public wards;
@@ -33,7 +25,6 @@ contract NFATFacility is ERC721 {
 
     mapping(address => uint256) public deposits;
     mapping(uint256 => uint256) public claimable;
-    mapping(uint256 => NFATData) public nfatData;
 
     // --- Immutables ---
 
@@ -50,13 +41,13 @@ contract NFATFacility is ERC721 {
     event Deposit(address indexed depositor, uint256 amount);
     event Withdraw(address indexed depositor, uint256 amount);
     event Issue(address indexed depositor, uint256 amount, uint256 indexed tokenId);
-    event Fund(uint256 indexed tokenId, address indexed funder, uint256 amount);
+    event Repay(uint256 indexed tokenId, address indexed repayer, uint256 amount);
     event Claim(uint256 indexed tokenId, address indexed claimer, uint256 amount);
     event SetRecipient(address indexed recipient);
     event SetIdentityNetwork(address indexed identityNetwork);
     event Rescue(address indexed token, address indexed to, uint256 amount);
     event RescueDeposit(address indexed depositor, address indexed to, uint256 amount);
-    event RescueFunding(uint256 indexed tokenId, address indexed to, uint256 amount);
+    event RescueRepayment(uint256 indexed tokenId, address indexed to, uint256 amount);
 
     // --- Modifiers ---
 
@@ -78,7 +69,7 @@ contract NFATFacility is ERC721 {
     // --- Constructor ---
 
     constructor(string memory name_, address asset_, address recipient_, address identityNetwork_, address operator_)
-        ERC721(string.concat("NFAT-", name_), string.concat("NFAT-", name_))
+        ERC721(name_, name_)
     {
         require(asset_ != address(0), "NFATFacility/asset-zero-address");
         require(recipient_ != address(0), "NFATFacility/recipient-zero-address");
@@ -173,7 +164,7 @@ contract NFATFacility is ERC721 {
         emit RescueDeposit(depositor, to, amount);
     }
 
-    function rescueFunding(uint256 tokenId, address to, uint256 amount) external auth {
+    function rescueRepayment(uint256 tokenId, address to, uint256 amount) external auth {
         require(to != address(0), "NFATFacility/to-zero-address");
         require(amount > 0, "NFATFacility/amount-zero");
 
@@ -182,7 +173,7 @@ contract NFATFacility is ERC721 {
         claimable[tokenId] = available - amount;
 
         asset.transfer(to, amount);
-        emit RescueFunding(tokenId, to, amount);
+        emit RescueRepayment(tokenId, to, amount);
     }
 
     // --- Operator functions ---
@@ -198,7 +189,6 @@ contract NFATFacility is ERC721 {
         }
 
         _mint(depositor, tokenId);
-        nfatData[tokenId] = NFATData(uint48(block.timestamp), depositor, amount);
 
         // Note: transfer after effects to maintain CEI ordering.
         if (amount > 0) {
@@ -212,7 +202,6 @@ contract NFATFacility is ERC721 {
 
     function deposit(uint256 amount) external stoppable {
         require(amount > 0, "NFATFacility/amount-zero");
-        _requireMember(msg.sender);
 
         deposits[msg.sender] += amount;
 
@@ -233,7 +222,7 @@ contract NFATFacility is ERC721 {
         emit Withdraw(msg.sender, amount);
     }
 
-    function fund(uint256 tokenId, uint256 amount) external stoppable {
+    function repay(uint256 tokenId, uint256 amount) external stoppable {
         require(amount > 0, "NFATFacility/amount-zero");
         require(_ownerOf(tokenId) != address(0), "NFATFacility/token-missing");
 
@@ -241,7 +230,7 @@ contract NFATFacility is ERC721 {
 
         asset.transferFrom(msg.sender, address(this), amount);
 
-        emit Fund(tokenId, msg.sender, amount);
+        emit Repay(tokenId, msg.sender, amount);
     }
 
     function claim(uint256 tokenId, uint256 amount) external stoppable {
