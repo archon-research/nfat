@@ -15,12 +15,6 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
     bytes32 public constant ROLE_OPERATOR = keccak256("OPERATOR");
     bytes32 public constant ROLE_PAUSE = keccak256("PAUSE");
 
-    struct NFATData {
-        uint48 mintedAt;
-        address depositor;
-        uint256 principal;
-    }
-
     IERC20 public immutable asset;
     address public recipient; // NFAT PAU (ALM Proxy)
 
@@ -28,19 +22,18 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
 
     mapping(address => uint256) public deposits;
     mapping(uint256 => uint256) public claimable;
-    mapping(uint256 => NFATData) public nfatData;
 
     event FacilityCreated(address indexed asset, address indexed recipient, address indexed admin, address operator);
     event Deposited(address indexed depositor, uint256 amount);
     event Withdrawn(address indexed depositor, uint256 amount);
     event Issued(address indexed depositor, uint256 amount, uint256 indexed tokenId);
-    event Funded(uint256 indexed tokenId, address indexed funder, uint256 amount);
+    event Repaid(uint256 indexed tokenId, address indexed repayer, uint256 amount);
     event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
     event RecipientUpdated(address indexed recipient);
     event IdentityNetworkUpdated(address indexed manager);
     event Rescued(address indexed token, address indexed to, uint256 amount);
     event RescuedDeposit(address indexed depositor, address indexed to, uint256 amount);
-    event RescuedFunding(uint256 indexed tokenId, address indexed to, uint256 amount);
+    event RescuedRepayment(uint256 indexed tokenId, address indexed to, uint256 amount);
 
     constructor(
         string memory name_,
@@ -49,7 +42,7 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
         address recipient_,
         address identityNetwork_,
         address operator
-    ) ERC721(string.concat("NFAT-", name_), string.concat("NFAT-", name_)) {
+    ) ERC721(name_, name_) {
         require(admin != address(0), "NFATFacility/admin-zero-address");
         require(asset_ != address(0), "NFATFacility/asset-zero-address");
         require(recipient_ != address(0), "NFATFacility/recipient-zero-address");
@@ -68,7 +61,6 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
     /// @notice Deposit asset into the facility queue.
     function deposit(uint256 amount) external nonReentrant whenNotPaused {
         require(amount > 0, "NFATFacility/amount-zero");
-        _requireMember(msg.sender);
 
         asset.safeTransferFrom(msg.sender, address(this), amount);
         deposits[msg.sender] += amount;
@@ -106,24 +98,23 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
         }
 
         _mint(depositor, tokenId);
-        nfatData[tokenId] = NFATData(uint48(block.timestamp), depositor, amount);
 
         emit Issued(depositor, amount, tokenId);
     }
 
-    /// @notice Fund an NFAT for the holder to claim.
+    /// @notice Repay an NFAT for the holder to claim.
     /// @dev Payments accumulate until the holder claims.
-    function fund(uint256 tokenId, uint256 amount) external nonReentrant whenNotPaused {
+    function repay(uint256 tokenId, uint256 amount) external nonReentrant whenNotPaused {
         require(amount > 0, "NFATFacility/amount-zero");
         require(_ownerOf(tokenId) != address(0), "NFATFacility/token-missing");
 
         asset.safeTransferFrom(msg.sender, address(this), amount);
         claimable[tokenId] += amount;
 
-        emit Funded(tokenId, msg.sender, amount);
+        emit Repaid(tokenId, msg.sender, amount);
     }
 
-    /// @notice Claim funded amounts for an NFAT.
+    /// @notice Claim repaid amounts for an NFAT.
     function claim(uint256 tokenId, uint256 amount) external nonReentrant whenNotPaused {
         require(ownerOf(tokenId) == msg.sender, "NFATFacility/not-owner");
         require(amount > 0, "NFATFacility/amount-zero");
@@ -162,7 +153,7 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /// @notice Rescue from claimable balance with accounting.
-    function rescueFunding(uint256 tokenId, address to, uint256 amount)
+    function rescueRepayment(uint256 tokenId, address to, uint256 amount)
         external
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -175,15 +166,15 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
         claimable[tokenId] = available - amount;
 
         asset.safeTransfer(to, amount);
-        emit RescuedFunding(tokenId, to, amount);
+        emit RescuedRepayment(tokenId, to, amount);
     }
 
-    /// @notice Pause deposit, issue, fund, and claim.
+    /// @notice Pause deposit, issue, repay, and claim.
     function pause() external onlyRole(ROLE_PAUSE) {
         _pause();
     }
 
-    /// @notice Unpause deposit, issue, fund, and claim.
+    /// @notice Unpause deposit, issue, repay, and claim.
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
