@@ -117,6 +117,7 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
     /// @notice Claim repaid amounts for an NFAT.
     function claim(uint256 tokenId, uint256 amount) external nonReentrant whenNotPaused {
         require(ownerOf(tokenId) == msg.sender, "NFATFacility/not-owner");
+        _requireMember(msg.sender);
         require(amount > 0, "NFATFacility/amount-zero");
 
         uint256 available = claimable[tokenId];
