@@ -10,8 +10,9 @@ The core contract is the **NFATFacility** - a single Solidity contract that mana
 
 1. **Deposit** - Suppliers (Primes) deposits an ERC-20 token (e.g. sUSDS) into the facility's queue.
 2. **Issue** - An operator (NFAT Beacon) mints an ERC-721 NFAT to the depositor and transfers the queued funds to a designated recipient (typically a Halo-controlled ALM proxy) for deployment into real-world assets.
-3. **Fund** - Over the life of the deal, funds flow back into the facility against specific NFATs (interest, principal repayments, etc.).
-4. **Claim** - The NFAT holder withdraws available funds at their discretion. The NFAT is never burned - funding and claiming can repeat indefinitely.
+3. **Repay** - Over the life of the deal, funds flow back into the facility against specific NFATs (interest, principal repayments, etc.). Repayments are tracked per repayer.
+4. **Claim** - The NFAT holder withdraws available funds at their discretion, specifying which repayer to draw from. The NFAT is never burned - repaying and claiming can repeat indefinitely.
+5. **Retract** - A repayer may retract their unclaimed repayment without admin intervention.
 
 ### Deposit & Issuance
 
@@ -28,17 +29,17 @@ flowchart LR
 
 Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU (ALMProxy)). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
 
-### Fund & Claim
+### Repay & Claim
 
 ```mermaid
 flowchart LR
-    HaloPAU[Halo PAU] -->|1. fund| Facility[NFATFacility]
+    HaloPAU[Halo PAU] -->|1. repay| Facility[NFATFacility]
     Facility -->|2. claim| Holder[NFAT Holder]
 ```
 
-The Halo sends asset into the NFAT facility over the life of the deal via `fund()`. The NFAT holder calls `claim()` to collect available asset. The NFAT is never burned - funding and claiming can repeat.
+The Halo sends asset into the NFAT facility over the life of the deal via `repay()`. The NFAT holder calls `claim()` to collect available asset, specifying which repayer to draw from. The NFAT is never burned - repaying and claiming can repeat.
 
-This design means the same contract and the same fund/claim cycle support bullet loans, amortizing repayments, and periodic interest payments without any special-casing. Off-chain coordination (via the Synome and NFAT Beacon) determines the schedule; on-chain logic stays simple.
+This design means the same contract and the same repay/claim cycle support bullet loans, amortizing repayments, and periodic interest payments without any special-casing. Off-chain coordination (via the Synome and NFAT Beacon) determines the schedule; on-chain logic stays simple.
 
 Access is role-gated: a Halo Proxy holds admin rights, and an operator role (the NFAT Beacon) handles issuance. Deposits and transfers can optionally be gated by an on-chain Identity Network.
 
@@ -63,13 +64,13 @@ sequenceDiagram
     Facility->>NFATPAU: safeTransfer(amount) [to recipient]
     Beacon->>Beacon: record in Synome
 
-    Note over Prime,Beacon: 3. FUND (repeats)
-    NFATPAU->>Facility: fund(tokenId, amount)
-    Note right of Facility: claimable[tokenId] += amount
+    Note over Prime,Beacon: 3. REPAY (repeats)
+    NFATPAU->>Facility: repay(tokenId, amount)
+    Note right of Facility: claimable[tokenId][repayer] += amount
     Beacon->>Beacon: record in Synome
 
     Note over Prime,Beacon: 4. CLAIM (repeats)
-    Prime->>Facility: claim(tokenId, amount)
+    Prime->>Facility: claim(tokenId, repayer, amount)
     Facility->>Prime: safeTransfer(amount)
     Note right of Facility: NFAT persists (not burned)
 ```
@@ -78,13 +79,13 @@ Steps 3–4 repeat as the Halo makes payments over the life of the deal.
 
 ### Payment Patterns
 
-All patterns use the same `fund()` / `claim()` cycle - the difference is off-chain coordination:
+All patterns use the same `repay()` / `claim()` cycle - the difference is off-chain coordination:
 
 | Pattern | Halo action | Prime action | NFAT state |
 |---------|-------------|--------------|------------|
-| **Bullet loan** | Fund principal + yield at maturity | Claim once | Persists |
-| **Amortizing** | Fund each scheduled payment | Claim after each funding | Persists throughout |
-| **Periodic interest** | Fund interest periodically | Claim as available | Persists until final |
+| **Bullet loan** | Repay principal + yield at maturity | Claim once | Persists |
+| **Amortizing** | Repay each scheduled payment | Claim after each repayment | Persists throughout |
+| **Periodic interest** | Repay interest periodically | Claim as available | Persists until final |
 
 Because the NFAT is never burned, the contract does not need to distinguish between these patterns - the Synome and NFAT Beacon handle scheduling.
 
@@ -115,21 +116,22 @@ Requirements organized by lifecycle phase.
 | I-5 | On-chain metadata records minting timestamp, depositor, and principal |
 | I-6 | A single deposit can be split across multiple NFATs with different principals (partial sweeps) |
 
-### 3. Funding & Payments
+### 3. Repayments
 
 | # | Requirement |
 |---|-------------|
-| F-1 | Funded amounts accumulate until claimed |
-| F-2 | The same fund/claim cycle supports bullet, amortizing, and periodic-interest patterns |
+| F-1 | Repaid amounts accumulate per repayer until claimed |
+| F-2 | The same repay/claim cycle supports bullet, amortizing, and periodic-interest patterns |
 | F-3 | Payment scheduling is managed by the Synome and NFAT Beacon |
+| F-4 | Repayers may retract unclaimed repayments without admin intervention |
 
 ### 4. Claims
 
 | # | Requirement |
 |---|-------------|
-| C-1 | Only the NFAT owner may claim funded amounts |
+| C-1 | Only the NFAT owner may claim repaid amounts, specifying which repayer to draw from |
 | C-2 | The caller specifies the claim amount - for tax optimization purposes |
-| C-3 | The NFAT is not burned on claim - it persists for future funding cycles |
+| C-3 | The NFAT is not burned on claim - it persists for future repayment cycles |
 
 ### 5. NFAT Transfers
 
@@ -153,7 +155,7 @@ Requirements organized by lifecycle phase.
 |---|-------------|
 | E-1 | Admin may recover any ERC-20 token held by the facility in case of operational failures |
 | E-2 | Admin may update the recipient address |
-| E-3 | `ROLE_PAUSE` can freeze the facility (pauses `deposit`, `issue`, `fund`, `claim`); only admin can unpause |
+| E-3 | `ROLE_PAUSE` can freeze the facility (pauses `deposit`, `issue`, `repay`, `claim`); only admin can unpause |
 
 ## Contracts
 
@@ -163,7 +165,7 @@ Requirements organized by lifecycle phase.
 
 **Inherits:** ERC721, AccessControl, Pausable, ReentrancyGuard
 
-The core contract. Manages the deposit queue, NFAT issuance, funding (NFAT payments), and claims all in a single contract.
+The core contract. Manages the deposit queue, NFAT issuance, repayments, claims, and self-service retraction all in a single contract.
 
 #### State
 
@@ -173,7 +175,7 @@ The core contract. Manages the deposit queue, NFAT issuance, funding (NFAT payme
 | `recipient` | `address` | mutable | Address that receives funds when NFATs are issued (typically the NFAT PAU (ALMProxy)); updatable via `setRecipient()` |
 | `identityNetwork` | `IIdentityNetwork` | mutable | Optional membership gating; `address(0)` disables checks |
 | `deposits` | `mapping(address => uint256)` | mutable | Queued deposit balance per depositor |
-| `claimable` | `mapping(uint256 => uint256)` | mutable | Funded (claimable) balance per NFAT token ID |
+| `claimable` | `mapping(uint256 => mapping(address => uint256))` | mutable | Repaid (claimable) balance per NFAT token ID per repayer |
 | `nfatData` | `mapping(uint256 => NFATData)` | mutable | On-chain metadata per NFAT; each entry is written once at issuance and never modified (immutable) |
 
 #### NFATData Struct
@@ -192,7 +194,7 @@ struct NFATData {
 |------|-------|---------|
 | `DEFAULT_ADMIN_ROLE` | HaloProxy | Role administration, recipient updates, identity network management, rescue, unpausing. Held by Halo Proxy which can make updates through spells. |
 | `ROLE_OPERATOR` | Halo's GovOps/NFAT Beacon | Pulls funds and issues NFATs |
-| `ROLE_PAUSE` | Configurable | Freezes the facility - either to retire it or in response to issues. Pauses `deposit`, `issue`, `fund`, `claim`. `withdraw` is intentionally exempt so depositors can always exit. Only `DEFAULT_ADMIN_ROLE` can unpause. |
+| `ROLE_PAUSE` | Configurable | Freezes the facility - either to retire it or in response to issues. Pauses `deposit`, `issue`, `repay`, `claim`. `withdraw` and `retract` are intentionally exempt so depositors and repayers can always exit. Only `DEFAULT_ADMIN_ROLE` can unpause. |
 
 #### Constructor
 
@@ -225,7 +227,7 @@ Queues `asset` (e.g. sUSDS) into the facility. Caller must be a member of the id
 
 **`withdraw(uint256 amount)`**
 
-Withdraws queued funds before issuance. No gating - depositors should always be able to withdraw.
+Withdraws queued funds before issuance. Not pausable - depositors should always be able to exit.
 
 | | |
 |---|---|
@@ -237,7 +239,7 @@ Withdraws queued funds before issuance. No gating - depositors should always be 
 
 **`issue(address depositor, uint256 amount, uint256 tokenId)`**
 
-Claims funds from a depositor's queue and mints an NFAT. `amount` may be zero to mint an empty NFAT for future funding.
+Claims funds from a depositor's queue and mints an NFAT. `amount` may be zero to mint an empty NFAT for future repayment.
 
 | | |
 |---|---|
@@ -247,33 +249,45 @@ Claims funds from a depositor's queue and mints an NFAT. `amount` may be zero to
 | Interactions | `asset.safeTransfer(recipient, amount)` (if > 0) |
 | Event | `Issued(depositor, amount, tokenId)` |
 
-**`fund(uint256 tokenId, uint256 amount)`**
+**`repay(uint256 tokenId, uint256 amount)`**
 
-Funds an NFAT for the holder to claim. Anyone can call (caller provides tokens).
+Repays an NFAT for the holder to claim. Anyone can call (caller provides tokens). Repayments are tracked per repayer, enabling self-service retraction.
 
 | | |
 |---|---|
 | Access | Any, `whenNotPaused` |
 | Guards | `amount > 0`, token must exist |
-| Effects | `claimable[tokenId] += amount` |
+| Effects | `claimable[tokenId][msg.sender] += amount` |
 | Interactions | `asset.safeTransferFrom(msg.sender, this, amount)` |
-| Event | `Funded(tokenId, msg.sender, amount)` |
+| Event | `Repaid(tokenId, msg.sender, amount)` |
 
-**`claim(uint256 tokenId, uint256 amount)`**
+**`claim(uint256 tokenId, address repayer, uint256 amount)`**
 
-Claims funded amounts for an NFAT. The caller specifies the amount to claim. The NFAT is **not** burned.
+Claims repaid amounts for an NFAT, drawing from a specific repayer's balance. The caller specifies the amount to claim. The NFAT is **not** burned.
 
 | | |
 |---|---|
 | Access | NFAT owner only, `whenNotPaused` |
-| Guards | `ownerOf(tokenId) == msg.sender`, `amount > 0`, `claimable[tokenId] >= amount` |
-| Effects | `claimable[tokenId] -= amount` |
+| Guards | `ownerOf(tokenId) == msg.sender`, `amount > 0`, `claimable[tokenId][repayer] >= amount` |
+| Effects | `claimable[tokenId][repayer] -= amount` |
 | Interactions | `asset.safeTransfer(msg.sender, amount)` |
 | Event | `Claimed(tokenId, claimer, amount)` |
 
+**`retract(uint256 tokenId, uint256 amount)`**
+
+Retracts an unclaimed repayment. Only the original repayer can retract their own balance. Not pausable - repayers should always be able to exit, same as depositors with `withdraw`.
+
+| | |
+|---|---|
+| Access | Original repayer only (via `claimable[tokenId][msg.sender]`) |
+| Guards | `amount > 0`, `claimable[tokenId][msg.sender] >= amount` |
+| Effects | `claimable[tokenId][msg.sender] -= amount` |
+| Interactions | `asset.safeTransfer(msg.sender, amount)` |
+| Event | `Retracted(tokenId, msg.sender, amount)` |
+
 **`rescue(address token, address to, uint256 amount)`**
 
-Rescue any ERC-20 token held by the facility. Does not adjust internal accounting - use `rescueDeposit` or `rescueFunding` for tracked balances.
+Rescue any ERC-20 token held by the facility. Does not adjust internal accounting - use `rescueDeposit` or `rescueRepayment` for tracked balances.
 
 | | |
 |---|---|
@@ -294,21 +308,21 @@ Rescue from a depositor's queued balance with proper accounting.
 | Interactions | `asset.safeTransfer(to, amount)` |
 | Event | `RescuedDeposit(depositor, to, amount)` |
 
-**`rescueFunding(uint256 tokenId, address to, uint256 amount)`**
+**`rescueRepayment(uint256 tokenId, address repayer, address to, uint256 amount)`**
 
-Rescue from an NFAT's claimable balance with proper accounting.
+Rescue from a repayer's claimable balance with proper accounting.
 
 | | |
 |---|---|
 | Access | `DEFAULT_ADMIN_ROLE` |
-| Guards | `to != address(0)`, `amount > 0`, `claimable[tokenId] >= amount` |
-| Effects | `claimable[tokenId] -= amount` |
+| Guards | `to != address(0)`, `amount > 0`, `claimable[tokenId][repayer] >= amount` |
+| Effects | `claimable[tokenId][repayer] -= amount` |
 | Interactions | `asset.safeTransfer(to, amount)` |
-| Event | `RescuedFunding(tokenId, to, amount)` |
+| Event | `RescuedRepayment(tokenId, repayer, to, amount)` |
 
 **`pause()`**
 
-Freezes the facility. Pauses `deposit`, `issue`, `fund`, and `claim`. `withdraw` is intentionally exempt so depositors can always exit. Can be used to retire a facility or in response to issues.
+Freezes the facility. Pauses `deposit`, `issue`, `repay`, and `claim`. `withdraw` and `retract` are intentionally exempt so depositors and repayers can always exit. Can be used to retire a facility or in response to issues.
 
 | | |
 |---|---|
@@ -356,13 +370,14 @@ event FacilityCreated(address indexed asset, address indexed recipient, address 
 event Deposited(address indexed depositor, uint256 amount);
 event Withdrawn(address indexed depositor, uint256 amount);
 event Issued(address indexed depositor, uint256 amount, uint256 indexed tokenId);
-event Funded(uint256 indexed tokenId, address indexed funder, uint256 amount);
+event Repaid(uint256 indexed tokenId, address indexed repayer, uint256 amount);
 event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
+event Retracted(uint256 indexed tokenId, address indexed repayer, uint256 amount);
 event RecipientUpdated(address indexed recipient);
 event IdentityNetworkUpdated(address indexed manager);
 event Rescued(address indexed token, address indexed to, uint256 amount);
 event RescuedDeposit(address indexed depositor, address indexed to, uint256 amount);
-event RescuedFunding(uint256 indexed tokenId, address indexed to, uint256 amount);
+event RescuedRepayment(uint256 indexed tokenId, address indexed repayer, address indexed to, uint256 amount);
 ```
 
 ## Identity Network
@@ -391,22 +406,31 @@ interface IIdentityNetwork {
 
 ### Pause
 
-The `ROLE_PAUSE` holder can freeze the facility by calling `pause()`. This pauses `deposit`, `issue`, `fund`, and `claim`. `withdraw` is intentionally exempt - depositors can always exit. Only `DEFAULT_ADMIN_ROLE` can call `unpause()`.
+The `ROLE_PAUSE` holder can freeze the facility by calling `pause()`. This pauses `deposit`, `issue`, `repay`, and `claim`. `withdraw` and `retract` are intentionally exempt - depositors and repayers can always exit. Only `DEFAULT_ADMIN_ROLE` can call `unpause()`.
 
 Use cases:
 - **Retire a facility** - pause permanently once all claims are settled
 - **Incident response** - freeze operations while investigating an issue
 
+### Self-service exit
+
+Two functions allow participants to exit without admin intervention, even when the facility is paused:
+
+- **`withdraw()`** - depositors can always pull back queued funds before issuance
+- **`retract()`** - repayers can always pull back unclaimed repayments
+
+Neither function is pausable. This ensures no participant's funds are locked by a pause action.
+
 ### Rescue
 
-The facility holds two types of tracked balances — `deposits[address]` (queued pre-issuance) and `claimable[tokenId]` (funded NFAT balances) — plus potentially untracked surplus (e.g. tokens sent directly to the contract). Three rescue functions cover the full recovery surface.
+The facility holds two types of tracked balances — `deposits[address]` (queued pre-issuance) and `claimable[tokenId][repayer]` (repaid NFAT balances per repayer) — plus potentially untracked surplus (e.g. tokens sent directly to the contract). Three rescue functions cover the full recovery surface.
 
 #### Rescue with accounting
 
 | Scenario | Function | Accounting |
 |----------|----------|------------|
 | Need to recover queued deposits on behalf of a depositor | `rescueDeposit()` | Decrements `deposits[depositor]` |
-| Need to recover funded balance from an NFAT (e.g. wrong NFAT or wrong amount) | `rescueFunding()` | Decrements `claimable[tokenId]` |
+| Need to recover repaid balance from an NFAT (e.g. wrong NFAT or wrong amount) | `rescueRepayment()` | Decrements `claimable[tokenId][repayer]` |
 
 These are admin-only (`DEFAULT_ADMIN_ROLE` / Halo Proxy via spell). They adjust internal accounting so the invariant `asset.balanceOf(facility) >= sum(deposits) + sum(claimable)` is preserved.
 
@@ -426,7 +450,7 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 **Spec:** NFAT is burned when the holder redeems (bullet) or "spent" to reduce principal (amortizing).
 
-**Implementation:** The NFAT persists after funds are claimed. Funding and claiming can repeat indefinitely.
+**Implementation:** The NFAT persists after funds are claimed. Repaying and claiming can repeat indefinitely.
 
 **Rationale:** A persistent token naturally supports all payment patterns (bullet, amortizing, periodic interest) without special-casing partial vs. full redemption. Burning risks loss of funds if unclaimed amounts exist. The NFAT serves as a permanent on-chain receipt.
 
@@ -434,9 +458,9 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 **Spec:** Separate Queue/Facility contract and Redeemer contract per facility.
 
-**Implementation:** `NFATFacility` combines queue, issuance, funding, and claims in a single contract.
+**Implementation:** `NFATFacility` combines queue, issuance, repayments, and claims in a single contract.
 
-**Rationale:** The facility is a transit point, not a long-term custodial store. The simplicity of a single contract outweighs the modularity of splitting. There is no functional reason for funds to flow through a separate redeemer when `fund()` and `claim()` on the same contract achieve the same result.
+**Rationale:** The facility is a transit point, not a long-term custodial store. The simplicity of a single contract outweighs the modularity of splitting. There is no functional reason for funds to flow through a separate redeemer when `repay()` and `claim()` on the same contract achieve the same result.
 
 ### 3. Simple deposit accounting instead of shares
 
@@ -446,13 +470,13 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 **Rationale:** The queue holds a single non-rebasing asset while queued with no yield in the facility itself (the asset itself can be yield-bearing e.g. sUSDS). Shares are always 1:1 with the underlying, making share math unnecessary overhead.
 
-### 4. No role gate on `fund()`
+### 4. No role gate on `repay()`
 
 **Spec:** Implies operator/sentinel-controlled funding.
 
-**Implementation:** Anyone can call `fund()`.
+**Implementation:** Anyone can call `repay()`.
 
-**Rationale:** Flexibility - enables Halos to fund a redemption from any PAU. Does not introduce any risks that cannot otherwise be resolved by the Admin or Sky (e.g. a Halo funds the wrong NFAT), as funds are moving into Sky.
+**Rationale:** Flexibility - enables Halos to repay from any PAU. Does not introduce any risks that cannot otherwise be resolved by the Admin or Sky (e.g. a Halo repays the wrong NFAT), as funds are moving into Sky. Per-repayer accounting means the repayer can self-service retract if needed.
 
 ## Outstanding Questions
 
@@ -468,10 +492,10 @@ This implementation diverges from the [canonical NFAT specification](https://git
    Argument against: New facilities can be deployed; funds don't need migration since facilities are transit points. With factories and Synome automation, deploying new facilities without painful migration should be possible.
 
 ### 4. Should all NFAT facilities behave identically or can they differ?
-   In the current Laniakea spec a factory deploys identical `NFATFacility` contracts. Future needs (e.g., specific legal jurisdictions, custom restrictions) may require variants. The interface (`deposit`, `issue`, `fund`, `claim`) should remain stable even if implementations diverge.
+   In the current Laniakea spec a factory deploys identical `NFATFacility` contracts. Future needs (e.g., specific legal jurisdictions, custom restrictions) may require variants. The interface (`deposit`, `issue`, `repay`, `claim`) should remain stable even if implementations diverge.
 
 ### 5. Should the NFAT facility support granular pause controls on functions?
-   In the POC `ROLE_PAUSE` can freeze the facility (`deposit`, `issue`, `fund`, `claim`). `withdraw` is exempt. Only `DEFAULT_ADMIN_ROLE` can unpause.
+   In the POC `ROLE_PAUSE` can freeze the facility (`deposit`, `issue`, `repay`, `claim`). `withdraw` and `retract` are exempt. Only `DEFAULT_ADMIN_ROLE` can unpause.
 
-### 6. Should funders be able to self-service retract funding (`defund()`)?
-   Currently, retracting funded amounts requires admin intervention via `rescueFunding()`, which means a spell is needed to correct any funding mistake. An alternative is a self-service `defund()` function that lets the original funder reclaim their contribution directly. This would require per-funder accounting (`claimable[tokenId][funder]` instead of flat `claimable[tokenId]`), which in turn means `claim()` must specify which funder to draw from. The tradeoff: self-service defund avoids the spell overhead for operational corrections (e.g. Halo funds wrong NFAT or wrong amount), but adds complexity to the claim flow and mapping structure. An implementation of defund is available on the `feat/defund` branch.
+### ~~6. Should repayers be able to self-service retract repayments?~~
+   **Resolved.** Implemented as `retract()`. Per-repayer accounting (`claimable[tokenId][repayer]`) enables repayers to pull back unclaimed repayments directly. The `claim()` function takes an `address repayer` parameter so the NFAT owner specifies which repayer to draw from. The tradeoff (added complexity in the claim flow and mapping structure) is accepted in exchange for self-service retraction without spell overhead.
