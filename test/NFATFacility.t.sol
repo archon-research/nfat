@@ -102,11 +102,11 @@ contract NFATFacilityTest is Test {
         vm.stopPrank();
 
         vm.prank(depositor);
-        facility.claim(7, redemption);
+        facility.claim(7, operator, redemption);
 
         assertEq(facility.ownerOf(7), depositor);
         assertEq(asset.balanceOf(depositor), redemption);
-        assertEq(facility.claimable(7), 0);
+        assertEq(facility.claimable(7, operator), 0);
         assertEq(asset.balanceOf(pau), claim);
     }
 
@@ -175,7 +175,7 @@ contract NFATFacilityTest is Test {
         facility.repay(42, amount);
         vm.stopPrank();
 
-        assertEq(facility.claimable(42), amount);
+        assertEq(facility.claimable(42, anyone), amount);
         assertEq(asset.balanceOf(address(facility)), amount);
     }
 
@@ -185,7 +185,7 @@ contract NFATFacilityTest is Test {
 
         vm.prank(address(0xBEEF));
         vm.expectRevert("NFATFacility/not-owner");
-        facility.claim(77, 1);
+        facility.claim(77, address(0), 1);
     }
 
     function testClaimZeroAmountReverts() public {
@@ -194,7 +194,7 @@ contract NFATFacilityTest is Test {
 
         vm.prank(depositor);
         vm.expectRevert("NFATFacility/amount-zero");
-        facility.claim(78, 0);
+        facility.claim(78, address(0), 0);
     }
 
     function testClaimInsufficientReverts() public {
@@ -203,7 +203,7 @@ contract NFATFacilityTest is Test {
 
         vm.prank(depositor);
         vm.expectRevert("NFATFacility/insufficient-claimable");
-        facility.claim(78, 1);
+        facility.claim(78, address(0), 1);
     }
 
     function testIdentityCheckEnforced() public {
@@ -245,12 +245,12 @@ contract NFATFacilityTest is Test {
         identityNetwork.setMember(receiver, false);
         vm.prank(receiver);
         vm.expectRevert("NFATFacility/not-member");
-        restricted.claim(100, repayAmount);
+        restricted.claim(100, operator, repayAmount);
 
         // Re-add receiver — claim should succeed
         identityNetwork.setMember(receiver, true);
         vm.prank(receiver);
-        restricted.claim(100, repayAmount);
+        restricted.claim(100, operator, repayAmount);
         assertEq(asset.balanceOf(receiver), repayAmount);
     }
 
@@ -274,20 +274,20 @@ contract NFATFacilityTest is Test {
 
         // Depositor is a member — claim succeeds
         vm.prank(depositor);
-        restricted.claim(200, 25e18);
+        restricted.claim(200, operator, 25e18);
         assertEq(asset.balanceOf(depositor), 25e18);
 
         // Remove depositor from identity network — claim reverts
         identityNetwork.setMember(depositor, false);
         vm.prank(depositor);
         vm.expectRevert("NFATFacility/not-member");
-        restricted.claim(200, 25e18);
+        restricted.claim(200, operator, 25e18);
 
         // No identity network — claim succeeds without membership
         vm.prank(admin);
         restricted.setIdentityNetwork(address(0));
         vm.prank(depositor);
-        restricted.claim(200, 25e18);
+        restricted.claim(200, operator, 25e18);
         assertEq(asset.balanceOf(depositor), 50e18);
     }
 
@@ -483,9 +483,9 @@ contract NFATFacilityTest is Test {
 
         address recipient = address(0xBEEF);
         vm.prank(admin);
-        facility.rescueRepayment(1, recipient, 40e18);
+        facility.rescueRepayment(1, operator, recipient, 40e18);
 
-        assertEq(facility.claimable(1), 60e18);
+        assertEq(facility.claimable(1, operator), 60e18);
         assertEq(asset.balanceOf(recipient), 40e18);
     }
 
@@ -504,9 +504,9 @@ contract NFATFacilityTest is Test {
 
         address recipient = address(0xBEEF);
         vm.prank(admin);
-        facility.rescueRepayment(1, recipient, withdraw_);
+        facility.rescueRepayment(1, operator, recipient, withdraw_);
 
-        assertEq(facility.claimable(1), repay_ - withdraw_);
+        assertEq(facility.claimable(1, operator), repay_ - withdraw_);
         assertEq(asset.balanceOf(recipient), withdraw_);
     }
 
@@ -516,7 +516,7 @@ contract NFATFacilityTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(0xF00D), role)
         );
-        facility.rescueRepayment(1, address(0xBEEF), 1);
+        facility.rescueRepayment(1, address(0), address(0xBEEF), 1);
     }
 
     function testRescueRepaymentInsufficientReverts() public {
@@ -525,19 +525,19 @@ contract NFATFacilityTest is Test {
 
         vm.prank(admin);
         vm.expectRevert("NFATFacility/insufficient-claimable");
-        facility.rescueRepayment(1, address(0xBEEF), 1);
+        facility.rescueRepayment(1, operator, address(0xBEEF), 1);
     }
 
     function testRescueRepaymentToZeroReverts() public {
         vm.prank(admin);
         vm.expectRevert("NFATFacility/to-zero-address");
-        facility.rescueRepayment(1, address(0), 1);
+        facility.rescueRepayment(1, address(0), address(0), 1);
     }
 
     function testRescueRepaymentZeroAmountReverts() public {
         vm.prank(admin);
         vm.expectRevert("NFATFacility/amount-zero");
-        facility.rescueRepayment(1, address(0xBEEF), 0);
+        facility.rescueRepayment(1, address(0), address(0xBEEF), 0);
     }
 
     // ── pause / unpause ───────────────────────────────────────────────────
@@ -612,7 +612,7 @@ contract NFATFacilityTest is Test {
 
         vm.prank(depositor);
         vm.expectRevert(Pausable.EnforcedPause.selector);
-        facility.claim(42, 1e18);
+        facility.claim(42, address(this), 1e18);
     }
 
     function testPauseAllowsWithdraw() public {
@@ -644,6 +644,122 @@ contract NFATFacilityTest is Test {
         vm.stopPrank();
 
         assertEq(facility.deposits(depositor), 1e18);
+    }
+
+    // ── retract ───────────────────────────────────────────────────────────
+
+    function testRetract() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 1);
+
+        uint256 repayAmount = 100e18;
+        asset.mint(operator, repayAmount);
+        vm.startPrank(operator);
+        asset.approve(address(facility), repayAmount);
+        facility.repay(1, repayAmount);
+        facility.retract(1, 40e18);
+        vm.stopPrank();
+
+        assertEq(facility.claimable(1, operator), 60e18);
+        assertEq(asset.balanceOf(operator), 40e18);
+    }
+
+    function testFuzz_Retract(uint96 repayAmt, uint96 retractAmt) public {
+        uint256 repay_ = bound(uint256(repayAmt), 1, 1_000_000e18);
+        uint256 retract_ = bound(uint256(retractAmt), 1, repay_);
+
+        vm.prank(operator);
+        facility.issue(depositor, 0, 1);
+
+        asset.mint(operator, repay_);
+        vm.startPrank(operator);
+        asset.approve(address(facility), repay_);
+        facility.repay(1, repay_);
+        facility.retract(1, retract_);
+        vm.stopPrank();
+
+        assertEq(facility.claimable(1, operator), repay_ - retract_);
+        assertEq(asset.balanceOf(operator), retract_);
+    }
+
+    function testRetractNonRepayerReverts() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 1);
+
+        uint256 repayAmount = 50e18;
+        asset.mint(operator, repayAmount);
+        vm.startPrank(operator);
+        asset.approve(address(facility), repayAmount);
+        facility.repay(1, repayAmount);
+        vm.stopPrank();
+
+        vm.prank(address(0xBEEF));
+        vm.expectRevert("NFATFacility/insufficient-claimable");
+        facility.retract(1, 1);
+    }
+
+    function testRetractZeroAmountReverts() public {
+        vm.expectRevert("NFATFacility/amount-zero");
+        facility.retract(1, 0);
+    }
+
+    function testRetractInsufficientReverts() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 1);
+
+        uint256 repayAmount = 10e18;
+        asset.mint(operator, repayAmount);
+        vm.startPrank(operator);
+        asset.approve(address(facility), repayAmount);
+        facility.repay(1, repayAmount);
+        vm.stopPrank();
+
+        vm.prank(operator);
+        vm.expectRevert("NFATFacility/insufficient-claimable");
+        facility.retract(1, repayAmount + 1);
+    }
+
+    function testRetractAfterClaimReducesClaimable() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 1);
+
+        uint256 repayAmount = 100e18;
+        asset.mint(operator, repayAmount);
+        vm.startPrank(operator);
+        asset.approve(address(facility), repayAmount);
+        facility.repay(1, repayAmount);
+        vm.stopPrank();
+
+        // Owner claims half
+        vm.prank(depositor);
+        facility.claim(1, operator, 50e18);
+
+        // Repayer retracts the other half
+        vm.prank(operator);
+        facility.retract(1, 50e18);
+
+        assertEq(facility.claimable(1, operator), 0);
+        assertEq(asset.balanceOf(depositor), 50e18);
+        assertEq(asset.balanceOf(operator), 50e18);
+    }
+
+    function testRetractBlockedWhenPaused() public {
+        vm.prank(operator);
+        facility.issue(depositor, 0, 42);
+
+        uint256 repayAmount = 10e18;
+        asset.mint(operator, repayAmount);
+        vm.startPrank(operator);
+        asset.approve(address(facility), repayAmount);
+        facility.repay(42, repayAmount);
+        vm.stopPrank();
+
+        vm.prank(admin);
+        facility.pause();
+
+        vm.prank(operator);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        facility.retract(42, repayAmount);
     }
 
     // ── setRecipient (fuzz) ─────────────────────────────────────────────

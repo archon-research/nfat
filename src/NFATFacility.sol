@@ -21,7 +21,7 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
     IIdentityNetwork public identityNetwork;
 
     mapping(address => uint256) public deposits;
-    mapping(uint256 => uint256) public claimable;
+    mapping(uint256 => mapping(address => uint256)) public claimable;
 
     event FacilityCreated(address indexed asset, address indexed recipient, address indexed admin, address operator);
     event Deposited(address indexed depositor, uint256 amount);
@@ -29,11 +29,12 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
     event Issued(address indexed depositor, uint256 amount, uint256 indexed tokenId);
     event Repaid(uint256 indexed tokenId, address indexed repayer, uint256 amount);
     event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
+    event Retracted(uint256 indexed tokenId, address indexed repayer, uint256 amount);
     event RecipientUpdated(address indexed recipient);
     event IdentityNetworkUpdated(address indexed manager);
     event Rescued(address indexed token, address indexed to, uint256 amount);
     event RescuedDeposit(address indexed depositor, address indexed to, uint256 amount);
-    event RescuedRepayment(uint256 indexed tokenId, address indexed to, uint256 amount);
+    event RescuedRepayment(uint256 indexed tokenId, address indexed repayer, address indexed to, uint256 amount);
 
     constructor(
         string memory name_,
@@ -109,24 +110,34 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
         require(_ownerOf(tokenId) != address(0), "NFATFacility/token-missing");
 
         asset.safeTransferFrom(msg.sender, address(this), amount);
-        claimable[tokenId] += amount;
+        claimable[tokenId][msg.sender] += amount;
 
         emit Repaid(tokenId, msg.sender, amount);
     }
 
     /// @notice Claim repaid amounts for an NFAT.
-    function claim(uint256 tokenId, uint256 amount) external nonReentrant whenNotPaused {
+    function claim(uint256 tokenId, address repayer, uint256 amount) external nonReentrant whenNotPaused {
         require(ownerOf(tokenId) == msg.sender, "NFATFacility/not-owner");
         _requireMember(msg.sender);
         require(amount > 0, "NFATFacility/amount-zero");
 
-        uint256 available = claimable[tokenId];
+        uint256 available = claimable[tokenId][repayer];
         require(available >= amount, "NFATFacility/insufficient-claimable");
-        claimable[tokenId] = available - amount;
+        claimable[tokenId][repayer] = available - amount;
 
         asset.safeTransfer(msg.sender, amount);
 
         emit Claimed(tokenId, msg.sender, amount);
+    }
+
+    /// @notice Retract a repayment. Only the original repayer can retract.
+    function retract(uint256 tokenId, uint256 amount) external nonReentrant whenNotPaused {
+        require(amount > 0, "NFATFacility/amount-zero");
+        uint256 available = claimable[tokenId][msg.sender];
+        require(available >= amount, "NFATFacility/insufficient-claimable");
+        claimable[tokenId][msg.sender] = available - amount;
+        asset.safeTransfer(msg.sender, amount);
+        emit Retracted(tokenId, msg.sender, amount);
     }
 
     /// @notice Rescue any ERC-20 token held by the facility.
@@ -154,7 +165,7 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /// @notice Rescue from claimable balance with accounting.
-    function rescueRepayment(uint256 tokenId, address to, uint256 amount)
+    function rescueRepayment(uint256 tokenId, address repayer, address to, uint256 amount)
         external
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -162,12 +173,12 @@ contract NFATFacility is ERC721, AccessControl, Pausable, ReentrancyGuard {
         require(to != address(0), "NFATFacility/to-zero-address");
         require(amount > 0, "NFATFacility/amount-zero");
 
-        uint256 available = claimable[tokenId];
+        uint256 available = claimable[tokenId][repayer];
         require(available >= amount, "NFATFacility/insufficient-claimable");
-        claimable[tokenId] = available - amount;
+        claimable[tokenId][repayer] = available - amount;
 
         asset.safeTransfer(to, amount);
-        emit RescuedRepayment(tokenId, to, amount);
+        emit RescuedRepayment(tokenId, repayer, to, amount);
     }
 
     /// @notice Pause deposit, issue, repay, and claim.
