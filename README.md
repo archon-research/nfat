@@ -40,7 +40,7 @@ The Halo sends asset into the NFAT facility over the life of the deal via `repay
 
 This design means the same contract and the same repay/claim cycle support bullet loans, amortizing repayments, and periodic interest payments without any special-casing. Off-chain coordination (via the Synome and NFAT Beacon) determines the schedule; on-chain logic stays simple.
 
-Access is ward-gated: a Halo Proxy holds admin rights (`wards`), and operators (`can`) handle issuance. Transfers and mints can optionally be gated by an on-chain Identity Network.
+Access is ward-gated: a Halo Proxy holds admin rights (`wards`), and operators (`can`) handle issuance. Transfers, mints, and claims can optionally be gated by an on-chain Identity Network.
 
 ## Operational Flow
 
@@ -125,7 +125,7 @@ Requirements organized by lifecycle phase.
 
 | # | Requirement |
 |---|-------------|
-| C-1 | Only the NFAT owner may claim funded amounts |
+| C-1 | Only the NFAT owner may claim funded amounts (identity-gated when Identity Network is set) |
 | C-2 | The caller specifies the claim amount - for tax optimization purposes |
 | C-3 | The NFAT is not burned on claim - it persists for future funding cycles |
 
@@ -140,7 +140,7 @@ Requirements organized by lifecycle phase.
 
 | # | Requirement |
 |---|-------------|
-| A-1 | Transfers and mints are optionally gated by an on-chain Identity Network |
+| A-1 | Transfers, mints, and claims are optionally gated by an on-chain Identity Network |
 | A-2 | Wards (Halo Proxy) manage auth, recipient address, identity network, and emergency recovery |
 | A-3 | Operators (NFAT Beacon) issue NFATs |
 
@@ -254,8 +254,8 @@ Claims funded amounts for an NFAT. The caller specifies the amount to claim. The
 
 | | |
 |---|---|
-| Access | NFAT owner only, `stoppable` |
-| Guards | `ownerOf(tokenId) == msg.sender`, `amount > 0`, `claimable[tokenId] >= amount` |
+| Access | NFAT owner only (identity-gated), `stoppable` |
+| Guards | `ownerOf(tokenId) == msg.sender`, `_requireMember(msg.sender)`, `amount > 0`, `claimable[tokenId] >= amount` |
 | Effects | `claimable[tokenId] -= amount` |
 | Interactions | `asset.transfer(msg.sender, amount)` |
 | Event | `Claim(tokenId, claimer, amount)` |
@@ -318,7 +318,7 @@ Sets or clears the identity network. Pass `address(0)` to disable.
 
 #### Internal: Identity Network Enforcement
 
-`_requireMember(address account)` - if `identityNetwork != address(0)`, calls `identityNetwork.isMember(account)` and reverts if false. Called by the `_update()` ERC-721 override (mints and transfers).
+`_requireMember(address account)` - if `identityNetwork != address(0)`, calls `identityNetwork.isMember(account)` and reverts if false. Called by the `_update()` ERC-721 override (mints and transfers) and by `claim()`.
 
 `_update(address to, uint256 tokenId, address auth)` - overrides ERC-721. If `to != address(0)` (mint or transfer), enforces identity check. Burns (`to == address(0)`) skip the check.
 
@@ -345,7 +345,7 @@ event RescueRepayment(uint256 indexed tokenId, address indexed to, uint256 amoun
 
 ## Identity Network
 
-ERC-721 mints and transfers are optionally gated by an Identity Network - an on-chain registry implementing:
+ERC-721 mints, transfers, and claims are optionally gated by an Identity Network - an on-chain registry implementing:
 
 ```solidity
 interface IdentityNetworkLike {
@@ -357,6 +357,7 @@ interface IdentityNetworkLike {
 
 **Enforcement points:**
 - `_update()` - recipient of mints and transfers must be a member
+- `claim()` - caller must be a member
 - Burns are exempt (allows emergency exit regardless of membership)
 
 **Management:**

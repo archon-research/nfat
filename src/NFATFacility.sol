@@ -235,6 +235,7 @@ contract NFATFacility is ERC721 {
 
     function claim(uint256 tokenId, uint256 amount) external stoppable {
         require(ownerOf(tokenId) == msg.sender, "NFATFacility/not-owner");
+        _requireMember(msg.sender);
         require(amount > 0, "NFATFacility/amount-zero");
 
         uint256 available = claimable[tokenId];
