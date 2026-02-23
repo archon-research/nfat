@@ -232,6 +232,63 @@ contract NFATFacilityTest is Test {
         vm.prank(depositor);
         restricted.transferFrom(depositor, receiver, 100);
         assertEq(restricted.ownerOf(100), receiver);
+
+        // Claim is gated by identity network
+        uint256 repayAmount = 10e18;
+        asset.mint(operator, repayAmount);
+        vm.startPrank(operator);
+        asset.approve(address(restricted), repayAmount);
+        restricted.repay(100, repayAmount);
+        vm.stopPrank();
+
+        // Remove receiver from identity network — claim should revert
+        identityNetwork.setMember(receiver, false);
+        vm.prank(receiver);
+        vm.expectRevert("NFATFacility/not-member");
+        restricted.claim(100, repayAmount);
+
+        // Re-add receiver — claim should succeed
+        identityNetwork.setMember(receiver, true);
+        vm.prank(receiver);
+        restricted.claim(100, repayAmount);
+        assertEq(asset.balanceOf(receiver), repayAmount);
+    }
+
+    function testClaimGatedByIdentityNetwork() public {
+        NFATFacility restricted =
+            new NFATFacility("Test", admin, address(asset), pau, address(identityNetwork), operator);
+
+        identityNetwork.setMember(depositor, true);
+
+        // Issue an NFAT
+        vm.prank(operator);
+        restricted.issue(depositor, 0, 200);
+
+        // Repay
+        uint256 repayAmount = 50e18;
+        asset.mint(operator, repayAmount);
+        vm.startPrank(operator);
+        asset.approve(address(restricted), repayAmount);
+        restricted.repay(200, repayAmount);
+        vm.stopPrank();
+
+        // Depositor is a member — claim succeeds
+        vm.prank(depositor);
+        restricted.claim(200, 25e18);
+        assertEq(asset.balanceOf(depositor), 25e18);
+
+        // Remove depositor from identity network — claim reverts
+        identityNetwork.setMember(depositor, false);
+        vm.prank(depositor);
+        vm.expectRevert("NFATFacility/not-member");
+        restricted.claim(200, 25e18);
+
+        // No identity network — claim succeeds without membership
+        vm.prank(admin);
+        restricted.setIdentityNetwork(address(0));
+        vm.prank(depositor);
+        restricted.claim(200, 25e18);
+        assertEq(asset.balanceOf(depositor), 50e18);
     }
 
     function testIdentityNetworkClearedAllowsAll() public {
