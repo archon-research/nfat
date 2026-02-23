@@ -10,8 +10,8 @@ The core contract is the **NFATFacility** - a single Solidity contract that mana
 
 1. **Deposit** - Suppliers (Primes) deposits an ERC-20 token (e.g. sUSDS) into the facility's queue.
 2. **Issue** - An operator (NFAT Beacon) mints an ERC-721 NFAT to the depositor and transfers the queued funds to a designated recipient (typically a Halo-controlled ALM proxy) for deployment into real-world assets.
-3. **Fund** - Over the life of the deal, funds flow back into the facility against specific NFATs (interest, principal repayments, etc.).
-4. **Claim** - The NFAT holder withdraws available funds at their discretion. The NFAT is never burned - funding and claiming can repeat indefinitely.
+3. **Repay** - Over the life of the deal, funds flow back into the facility against specific NFATs (interest, principal repayments, etc.).
+4. **Claim** - The NFAT holder withdraws available funds at their discretion. The NFAT is never burned - repayment and claiming can repeat indefinitely.
 
 ### Deposit & Issuance
 
@@ -28,19 +28,19 @@ flowchart LR
 
 Prime deposits asset in the NFAT Facility. The Operator (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU (ALMProxy)). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
 
-### Fund & Claim
+### Repay & Claim
 
 ```mermaid
 flowchart LR
-    HaloPAU[Halo PAU] -->|1. fund| Facility[NFATFacility]
+    HaloPAU[Halo PAU] -->|1. repay| Facility[NFATFacility]
     Facility -->|2. claim| Holder[NFAT Holder]
 ```
 
-The Halo sends asset into the NFAT facility over the life of the deal via `fund()`. The NFAT holder calls `claim()` to collect available asset. The NFAT is never burned - funding and claiming can repeat.
+The Halo sends asset into the NFAT facility over the life of the deal via `repay()`. The NFAT holder calls `claim()` to collect available asset. The NFAT is never burned - repayment and claiming can repeat.
 
-This design means the same contract and the same fund/claim cycle support bullet loans, amortizing repayments, and periodic interest payments without any special-casing. Off-chain coordination (via the Synome and NFAT Beacon) determines the schedule; on-chain logic stays simple.
+This design means the same contract and the same repay/claim cycle support bullet loans, amortizing repayments, and periodic interest payments without any special-casing. Off-chain coordination (via the Synome and NFAT Beacon) determines the schedule; on-chain logic stays simple.
 
-Access is ward-gated: a Halo Proxy holds admin rights (`wards`), and operators (`can`) handle issuance. Deposits and transfers can optionally be gated by an on-chain Identity Network.
+Access is ward-gated: a Halo Proxy holds admin rights (`wards`), and operators (`can`) handle issuance. Transfers, mints, and claims can optionally be gated by an on-chain Identity Network.
 
 ## Operational Flow
 
@@ -63,8 +63,8 @@ sequenceDiagram
     Facility->>NFATPAU: transfer(amount) [to recipient]
     Beacon->>Beacon: record in Synome
 
-    Note over Prime,Beacon: 3. FUND (repeats)
-    NFATPAU->>Facility: fund(tokenId, amount)
+    Note over Prime,Beacon: 3. REPAY (repeats)
+    NFATPAU->>Facility: repay(tokenId, amount)
     Note right of Facility: claimable[tokenId] += amount
     Beacon->>Beacon: record in Synome
 
@@ -78,15 +78,15 @@ Steps 3–4 repeat as the Halo makes payments over the life of the deal.
 
 ### Payment Patterns
 
-All patterns use the same `fund()` / `claim()` cycle - the difference is off-chain coordination:
+All patterns use the same `repay()` / `claim()` cycle - the difference is off-chain coordination:
 
 | Pattern | Halo action | Prime action | NFAT state |
 |---------|-------------|--------------|------------|
-| **Bullet loan** | Fund principal + yield at maturity | Claim once | Persists |
-| **Amortizing** | Fund each scheduled payment | Claim after each funding | Persists throughout |
-| **Periodic interest** | Fund interest periodically | Claim as available | Persists until final |
+| **Bullet loan** | Repay principal + yield at maturity | Claim once | Persists |
+| **Amortizing** | Repay each scheduled payment | Claim after each repayment | Persists throughout |
+| **Periodic interest** | Repay interest periodically | Claim as available | Persists until final |
 
-Because the NFAT is never burned, the contract does not need to distinguish between these patterns - the Synome and NFAT Beacon handle scheduling.
+Because the NFAT is never burned, the contract does not need to distinguish between these patterns — the Synome and NFAT Beacon handle scheduling.
 
 ### Token ID Strategy
 
@@ -102,7 +102,6 @@ Requirements organized by lifecycle phase.
 |---|-------------|
 | D-1 | A Prime may deposit a designated ERC-20 asset into the facility queue (non-rebasing) |
 | D-2 | A depositor may withdraw any queued balance before issuance |
-| D-3 | Only Identity Network members may deposit (when the network is set) |
 
 ### 2. Issuance
 
@@ -112,22 +111,21 @@ Requirements organized by lifecycle phase.
 | I-2 | Issued funds are transferred to the recipient (NFAT PAU (ALMProxy)) |
 | I-3 | An NFAT may be issued with zero principal - e.g. rollover existing NFAT into a new NFAT, with terms detailed in Synome |
 | I-4 | Token IDs are Operator-assigned; uniqueness enforced (e.g. by ERC-721 `_mint`) |
-| I-5 | On-chain metadata records minting timestamp, depositor, and principal |
-| I-6 | A single deposit can be split across multiple NFATs with different principals (partial sweeps) |
+| I-5 | A single deposit can be split across multiple NFATs with different principals (partial sweeps) |
 
-### 3. Funding & Payments
+### 3. Repayment & Payments
 
 | # | Requirement |
 |---|-------------|
-| F-1 | Funded amounts accumulate until claimed |
-| F-2 | The same fund/claim cycle supports bullet, amortizing, and periodic-interest patterns |
+| F-1 | Repaid amounts accumulate until claimed |
+| F-2 | The same repay/claim cycle supports bullet, amortizing, and periodic-interest patterns |
 | F-3 | Payment scheduling is managed by the Synome and NFAT Beacon |
 
 ### 4. Claims
 
 | # | Requirement |
 |---|-------------|
-| C-1 | Only the NFAT owner may claim funded amounts |
+| C-1 | Only the NFAT owner may claim funded amounts (identity-gated when Identity Network is set) |
 | C-2 | The caller specifies the claim amount - for tax optimization purposes |
 | C-3 | The NFAT is not burned on claim - it persists for future funding cycles |
 
@@ -142,7 +140,7 @@ Requirements organized by lifecycle phase.
 
 | # | Requirement |
 |---|-------------|
-| A-1 | Deposits and transfers are optionally gated by an on-chain Identity Network |
+| A-1 | Transfers, mints, and claims are optionally gated by an on-chain Identity Network |
 | A-2 | Wards (Halo Proxy) manage auth, recipient address, identity network, and emergency recovery |
 | A-3 | Operators (NFAT Beacon) issue NFATs |
 
@@ -162,7 +160,7 @@ Requirements organized by lifecycle phase.
 
 **Inherits:** ERC721
 
-The core contract. Manages the deposit queue, NFAT issuance, funding (NFAT payments), and claims all in a single contract.
+The core contract. Manages the deposit queue, NFAT issuance, repayment (NFAT payments), and claims all in a single contract.
 
 #### State
 
@@ -176,17 +174,6 @@ The core contract. Manages the deposit queue, NFAT issuance, funding (NFAT payme
 | `identityNetwork` | `IdentityNetworkLike` | mutable | Optional membership gating; `address(0)` disables checks |
 | `deposits` | `mapping(address => uint256)` | mutable | Queued deposit balance per depositor |
 | `claimable` | `mapping(uint256 => uint256)` | mutable | Funded (claimable) balance per NFAT token ID |
-| `nfatData` | `mapping(uint256 => NFATData)` | mutable | On-chain metadata per NFAT; each entry is written once at issuance and never modified (immutable) |
-
-#### NFATData Struct
-
-```solidity
-struct NFATData {
-    uint48  mintedAt;    // block.timestamp at issuance
-    address depositor;   // original depositor address
-    uint256 principal;   // amount claimed from deposit queue at issuance
-}
-```
 
 #### Auth
 
@@ -201,7 +188,7 @@ The `auth` modifier requires `wards[msg.sender] == 1`. The `operatorAuth` modifi
 
 ```solidity
 constructor(
-    string memory name_,           // facility class name - ERC721 name and symbol become "NFAT-{name_}"
+    string memory name_,           // facility name - used as ERC721 name and symbol
     address asset_,                // immutable ERC-20
     address recipient_,            // initial recipient (typically NFAT PAU (ALMProxy))
     address identityNetwork_,      // optional (can be address(0))
@@ -215,12 +202,12 @@ constructor(
 
 **`deposit(uint256 amount)`**
 
-Queues `asset` (e.g. sUSDS) into the facility. Caller must be a member of the identity network (if set).
+Queues `asset` (e.g. sUSDS) into the facility.
 
 | | |
 |---|---|
-| Access | Any (identity-gated), `stoppable` |
-| Guards | `amount > 0`, `_requireMember(msg.sender)` |
+| Access | Any, `stoppable` |
+| Guards | `amount > 0` |
 | Effects | `deposits[msg.sender] += amount` |
 | Interactions | `asset.transferFrom(msg.sender, this, amount)` |
 | Event | `Deposit(depositor, amount)` |
@@ -245,13 +232,13 @@ Claims funds from a depositor's queue and mints an NFAT. `amount` may be zero to
 |---|---|
 | Access | `operatorAuth`, `stoppable` |
 | Guards | `depositor != address(0)`, if `amount > 0`: `deposits[depositor] >= amount` |
-| Effects | `deposits[depositor] -= amount` (if > 0), `_mint(depositor, tokenId)`, `nfatData[tokenId]` set |
+| Effects | `deposits[depositor] -= amount` (if > 0), `_mint(depositor, tokenId)` |
 | Interactions | `asset.transfer(recipient, amount)` (if > 0) |
 | Event | `Issue(depositor, amount, tokenId)` |
 
-**`fund(uint256 tokenId, uint256 amount)`**
+**`repay(uint256 tokenId, uint256 amount)`**
 
-Funds an NFAT for the holder to claim. Anyone can call (caller provides tokens).
+Repays an NFAT for the holder to claim. Anyone can call (caller provides tokens).
 
 | | |
 |---|---|
@@ -259,7 +246,7 @@ Funds an NFAT for the holder to claim. Anyone can call (caller provides tokens).
 | Guards | `amount > 0`, token must exist |
 | Effects | `claimable[tokenId] += amount` |
 | Interactions | `asset.transferFrom(msg.sender, this, amount)` |
-| Event | `Fund(tokenId, msg.sender, amount)` |
+| Event | `Repay(tokenId, msg.sender, amount)` |
 
 **`claim(uint256 tokenId, uint256 amount)`**
 
@@ -267,15 +254,15 @@ Claims funded amounts for an NFAT. The caller specifies the amount to claim. The
 
 | | |
 |---|---|
-| Access | NFAT owner only, `stoppable` |
-| Guards | `ownerOf(tokenId) == msg.sender`, `amount > 0`, `claimable[tokenId] >= amount` |
+| Access | NFAT owner only (identity-gated), `stoppable` |
+| Guards | `ownerOf(tokenId) == msg.sender`, `_requireMember(msg.sender)`, `amount > 0`, `claimable[tokenId] >= amount` |
 | Effects | `claimable[tokenId] -= amount` |
 | Interactions | `asset.transfer(msg.sender, amount)` |
 | Event | `Claim(tokenId, claimer, amount)` |
 
 **`rescue(address token, address to, uint256 amount)`**
 
-Recovery of any ERC-20 token held by the facility. Does not adjust internal accounting - use `rescueDeposit` or `rescueFunding` for tracked balances.
+Recovery of any ERC-20 token held by the facility. Does not adjust internal accounting - use `rescueDeposit` or `rescueRepayment` for tracked balances.
 
 | | |
 |---|---|
@@ -296,7 +283,7 @@ Rescue a depositor's queued balance with proper accounting.
 | Interactions | `asset.transfer(to, amount)` |
 | Event | `RescueDeposit(depositor, to, amount)` |
 
-**`rescueFunding(uint256 tokenId, address to, uint256 amount)`**
+**`rescueRepayment(uint256 tokenId, address to, uint256 amount)`**
 
 Rescue an NFAT's claimable balance with proper accounting.
 
@@ -306,7 +293,7 @@ Rescue an NFAT's claimable balance with proper accounting.
 | Guards | `to != address(0)`, `amount > 0`, `claimable[tokenId] >= amount` |
 | Effects | `claimable[tokenId] -= amount` |
 | Interactions | `asset.transfer(to, amount)` |
-| Event | `RescueFunding(tokenId, to, amount)` |
+| Event | `RescueRepayment(tokenId, to, amount)` |
 
 **`setRecipient(address recipient_)`**
 
@@ -331,7 +318,7 @@ Sets or clears the identity network. Pass `address(0)` to disable.
 
 #### Internal: Identity Network Enforcement
 
-`_requireMember(address account)` - if `identityNetwork != address(0)`, calls `identityNetwork.isMember(account)` and reverts if false. Called by `deposit()` and the `_update()` ERC-721 override.
+`_requireMember(address account)` - if `identityNetwork != address(0)`, calls `identityNetwork.isMember(account)` and reverts if false. Called by the `_update()` ERC-721 override (mints and transfers) and by `claim()`.
 
 `_update(address to, uint256 tokenId, address auth)` - overrides ERC-721. If `to != address(0)` (mint or transfer), enforces identity check. Burns (`to == address(0)`) skip the check.
 
@@ -347,18 +334,18 @@ event Start();
 event Deposit(address indexed depositor, uint256 amount);
 event Withdraw(address indexed depositor, uint256 amount);
 event Issue(address indexed depositor, uint256 amount, uint256 indexed tokenId);
-event Fund(uint256 indexed tokenId, address indexed funder, uint256 amount);
+event Repay(uint256 indexed tokenId, address indexed repayer, uint256 amount);
 event Claim(uint256 indexed tokenId, address indexed claimer, uint256 amount);
 event SetRecipient(address indexed recipient);
 event SetIdentityNetwork(address indexed identityNetwork);
 event Rescue(address indexed token, address indexed to, uint256 amount);
 event RescueDeposit(address indexed depositor, address indexed to, uint256 amount);
-event RescueFunding(uint256 indexed tokenId, address indexed to, uint256 amount);
+event RescueRepayment(uint256 indexed tokenId, address indexed to, uint256 amount);
 ```
 
 ## Identity Network
 
-Deposits and ERC-721 transfers are optionally gated by an Identity Network - an on-chain registry implementing:
+ERC-721 mints, transfers, and claims are optionally gated by an Identity Network - an on-chain registry implementing:
 
 ```solidity
 interface IdentityNetworkLike {
@@ -369,8 +356,8 @@ interface IdentityNetworkLike {
 **Note:** The Identity Network is not fully specified yet. However, we believe the business logic remains similar even if the interface should change slightly.
 
 **Enforcement points:**
-- `deposit()` - caller must be a member
 - `_update()` - recipient of mints and transfers must be a member
+- `claim()` - caller must be a member
 - Burns are exempt (allows emergency exit regardless of membership)
 
 **Management:**
@@ -387,7 +374,7 @@ The facility holds two types of tracked balances - `deposits[address]` (queued p
 | Scenario | Function | Accounting |
 |----------|----------|------------|
 | Need to recover queued deposits on behalf of a depositor | `rescueDeposit()` | Decrements `deposits[depositor]` |
-| Need to recover funded balance from an NFAT (e.g. wrong NFAT or wrong amount) | `rescueFunding()` | Decrements `claimable[tokenId]` |
+| Need to recover funded balance from an NFAT (e.g. wrong NFAT or wrong amount) | `rescueRepayment()` | Decrements `claimable[tokenId]` |
 
 These are admin-only (`auth` / Halo Proxy via spell). They adjust internal accounting so the invariant `asset.balanceOf(facility) >= sum(deposits) + sum(claimable)` is preserved.
 
@@ -417,7 +404,7 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 **Implementation:** `NFATFacility` combines queue, issuance, funding, and claims in a single contract.
 
-**Rationale:** The facility is a transit point, not a long-term custodial store. The simplicity of a single contract outweighs the modularity of splitting. There is no functional reason for funds to flow through a separate redeemer when `fund()` and `claim()` on the same contract achieve the same result.
+**Rationale:** The facility is a transit point, not a long-term custodial store. The simplicity of a single contract outweighs the modularity of splitting. There is no functional reason for funds to flow through a separate redeemer when `repay()` and `claim()` on the same contract achieve the same result.
 
 ### 3. Simple deposit accounting instead of shares
 
@@ -427,32 +414,29 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 **Rationale:** The queue holds a single non-rebasing asset while queued with no yield in the facility itself (the asset itself can be yield-bearing e.g. sUSDS). Shares are always 1:1 with the underlying, making share math unnecessary overhead.
 
-### 4. No role gate on `fund()`
+### 4. No role gate on `repay()`
 
 **Spec:** Implies operator/sentinel-controlled funding.
 
-**Implementation:** Anyone can call `fund()`.
+**Implementation:** Anyone can call `repay()`.
 
-**Rationale:** Flexibility - enables Halos to fund a redemption from any PAU. Does not introduce any risks that cannot otherwise be resolved by the Admin or Sky (e.g. a Halo funds the wrong NFAT), as funds are moving into Sky.
+**Rationale:** Flexibility - enables Halos to repay from any PAU. Does not introduce any risks that cannot otherwise be resolved by the Admin or Sky (e.g. a Halo repays the wrong NFAT), as funds are moving into Sky.
 
 ## Outstanding Questions
 
-### 1. Is the `NFATData` struct needed, and if so, what should it include? (`NFATFacility.sol:17`)
-   Currently stores `mintedAt`, `depositor`, and `principal` on-chain at issuance. All of this data is already available from event logs (`Issued`). If no on-chain consumer needs to read these fields, the struct adds storage cost without clear benefit. If the struct is kept, research is needed if more metadata is needed from a business or operational POV.
-
-### 2. Should `rescue`'s `to` address be immutable?
+### 1. Should `rescue`'s `to` address be immutable?
    Setting the recovery destination in the constructor (e.g., to `DsPauseProxy` or similar) would reduce trust assumptions on the admin. Tradeoff: less flexibility in recovery scenarios.
    Currently the Halo Proxy can recover to any address via spell.
 
-### 3. Should NFAT facilities be upgradeable?
+### 2. Should NFAT facilities be upgradeable?
    Halo Proxy can update certain parameters - however should they also be able to upgrade the logic of NFAT facilities?
    Argument against: New facilities can be deployed; funds don't need migration since facilities are transit points. With factories and Synome automation, deploying new facilities without painful migration should be possible.
 
-### 4. Should all NFAT facilities behave identically or can they differ?
-   In the current Laniakea spec a factory deploys identical `NFATFacility` contracts. Future needs (e.g., specific legal jurisdictions, custom restrictions) may require variants. The interface (`deposit`, `issue`, `fund`, `claim`) should remain stable even if implementations diverge.
+### 3. Should all NFAT facilities behave identically or can they differ?
+   In the current Laniakea spec a factory deploys identical `NFATFacility` contracts. Future needs (e.g., specific legal jurisdictions, custom restrictions) may require variants. The interface (`deposit`, `issue`, `repay`, `claim`) should remain stable even if implementations diverge.
 
-### 5. Should the NFAT facility support granular pause controls on functions?
-   The `stoppable` modifier gates `deposit`, `issue`, `fund`, and `claim`. `withdraw` is intentionally exempt so depositors can always exit. The current `stop()`/`start()` is all-or-nothing — per-function pausing would add finer-grained emergency response but also complexity.
+### 4. Should the NFAT facility support granular pause controls on functions?
+   The `stoppable` modifier gates `deposit`, `issue`, `repay`, and `claim`. `withdraw` is intentionally exempt so depositors can always exit. The current `stop()`/`start()` is all-or-nothing — per-function pausing would add finer-grained emergency response but also complexity.
 
-### 6. Should funders be able to self-service retract funding (`defund()`)?
-   Currently, retracting funded amounts requires admin intervention via `emergencyWithdrawFunding()`, which means a spell is needed to correct any funding mistake. An alternative is a self-service `defund()` function that lets the original funder reclaim their contribution directly. This would require per-funder accounting (`claimable[tokenId][funder]` instead of flat `claimable[tokenId]`), which in turn means `claim()` must specify which funder to draw from. The tradeoff: self-service defund avoids the spell overhead for operational corrections (e.g. Halo funds wrong NFAT or wrong amount), but adds complexity to the claim flow and mapping structure. An implementation of defund is available on the `feat/defund` branch.
+### 5. Should repayers be able to self-service retract repayment (`unrepay()`)?
+   Currently, retracting repaid amounts requires admin intervention via `rescueRepayment()`, which means a spell is needed to correct any repayment mistake. An alternative is a self-service function that lets the original repayer reclaim their contribution directly. This would require per-repayer accounting (`claimable[tokenId][repayer]` instead of flat `claimable[tokenId]`), which in turn means `claim()` must specify which repayer to draw from. The tradeoff: self-service retraction avoids the spell overhead for operational corrections (e.g. Halo repays wrong NFAT or wrong amount), but adds complexity to the claim flow and mapping structure.
