@@ -1,6 +1,6 @@
-# NFAT Technical Exploration
+# NFAT Technical Specification
 
-This document explores the NFAT (Non-Fungible Allocation Token) smart contract implementation. It describes the NFAT draft implementation, documents deliberate deviations from the [Laniakea NFAT specification](https://github.com/sky-ecosystem/laniakea-docs/blob/main/smart-contracts/nfats.md), and tracks open design questions. The Solidity implementation in this repository is a proof of concept intended to demonstrate the business logic.
+> **Implementation:** [sky-ecosystem/nfat](https://github.com/sky-ecosystem/nfat) (imported as a Foundry lib in this repo). This document describes the production NFATFacility contract and documents deliberate deviations from the [Laniakea NFAT specification](https://github.com/sky-ecosystem/laniakea-docs/blob/main/smart-contracts/nfats.md).
 
 ## Overview
 
@@ -8,16 +8,16 @@ An NFAT (Non-Fungible Allocation Token) is an ERC-721 token that represents a cl
 
 The core contract is the **NFATFacility** - a single Solidity contract that manages the full lifecycle of an NFAT:
 
-1. **Deposit** - Suppliers (Primes) deposits an ERC-20 token (e.g. sUSDS) into the facility's queue.
-2. **Issue** - An operator (NFAT Beacon) mints an ERC-721 NFAT to the depositor and transfers the queued funds to a designated recipient (typically a Halo-controlled ALM proxy) for deployment into real-world assets.
+1. **Subscribe** - Suppliers (Primes) deposit an ERC-20 token (e.g. sUSDS) into the facility's queue, optionally attaching off-chain term metadata.
+2. **Issue** - An operator (NFAT Beacon) mints an ERC-721 NFAT to the subscriber and transfers the queued funds to a designated recipient (typically a Halo-controlled ALM proxy) for deployment into real-world assets.
 3. **Repay** - Over the life of the deal, funds flow back into the facility against specific NFATs (interest, principal repayments, etc.).
-4. **Claim** - The NFAT holder withdraws available funds at their discretion. The NFAT is never burned - repayment and claiming can repeat indefinitely.
+4. **Collect** - The NFAT holder withdraws available funds at their discretion. The NFAT is never burned - repayment and collection can repeat indefinitely.
 
-### Deposit & Issuance
+### Subscribe & Issuance
 
 ```mermaid
 flowchart LR
-    Prime[Prime PAU] -->|1. deposit asset| Facility[NFATFacility]
+    Prime[Prime PAU] -->|1. subscribe| Facility[NFATFacility]
     Beacon["Operator
     (NFAT Beacon)"] -->|2. issue| Facility
     Facility -->|2. mint NFAT| Prime
@@ -26,21 +26,21 @@ flowchart LR
     NFATPAU -->|3. deploy| RWA[RWA]
 ```
 
-Prime deposits asset in the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the deposited assets to the recipient (typically the NFAT PAU (ALMProxy)). A single recipient can serve many facilities - the address is configurable per facility and multiple facilities can point to the same one.
+Prime subscribes asset to the NFAT Facility. The NFAT Beacon (controlled by Halo GovOps) calls `issue()`, which mints the NFAT to the Prime and transfers the subscribed assets to the recipient (typically the NFAT PAU (ALMProxy)). A single recipient can serve many facilities - the address is configurable per facility via `file()` and multiple facilities can point to the same one.
 
-### Repay & Claim
+### Repay & Collect
 
 ```mermaid
 flowchart LR
     HaloPAU[Halo PAU] -->|1. repay| Facility[NFATFacility]
-    Facility -->|2. claim| Holder[NFAT Holder]
+    Facility -->|2. collect| Holder[NFAT Holder]
 ```
 
-The Halo sends asset into the NFAT facility over the life of the deal via `repay()`. The NFAT holder calls `claim()` to collect available asset. The NFAT is never burned - repayment and claiming can repeat.
+The Halo sends asset into the NFAT facility over the life of the deal via `repay()`. The NFAT holder calls `collect()` to withdraw available asset. The NFAT is never burned - repayment and collection can repeat.
 
-This design means the same contract and the same repay/claim cycle support bullet loans, amortizing repayments, and periodic interest payments without any special-casing. Off-chain coordination (via the Synome and NFAT Beacon) determines the schedule; on-chain logic stays simple.
+This design means the same contract and the same repay/collect cycle support bullet loans, amortizing repayments, and periodic interest payments without any special-casing. Off-chain coordination (via the Synome and NFAT Beacon) determines the schedule; on-chain logic stays simple.
 
-Access is role-gated: a Halo Proxy holds admin rights, and an operator role (the NFAT Beacon) handles issuance. Transfers and claims can optionally be gated by an on-chain Identity Network.
+Access is role-gated: wards hold admin rights, buds (operators) handle issuance, and cops (freezers) can halt the facility. Transfers and collection can optionally be gated by an on-chain Identity Network.
 
 ## Operational Flow
 
@@ -53,24 +53,24 @@ sequenceDiagram
     participant NFATPAU as NFAT PAU (Halo)
     participant Beacon as Operator (NFAT Beacon)
 
-    Note over Prime,Beacon: 1. DEPOSIT
-    Prime->>Facility: deposit(amount)
+    Note over Prime,Beacon: 1. SUBSCRIBE
+    Prime->>Facility: subscribe(amount, data)
     Note right of Facility: deposits[prime] += amount
 
     Note over Prime,Beacon: 2. ISSUE
-    Beacon->>Facility: issue(depositor, amount, tokenId)
+    Beacon->>Facility: issue(to, tokenId, amount)
     Facility-->>Prime: mint NFAT
-    Facility->>NFATPAU: safeTransfer(amount) [to recipient]
+    Facility->>NFATPAU: transfer(amount) [to recipient]
     Beacon->>Beacon: record in Synome
 
     Note over Prime,Beacon: 3. REPAY (repeats)
     NFATPAU->>Facility: repay(tokenId, amount)
-    Note right of Facility: claimable[tokenId] += amount
+    Note right of Facility: collectable[tokenId] += amount
     Beacon->>Beacon: record in Synome
 
-    Note over Prime,Beacon: 4. CLAIM (repeats)
-    Prime->>Facility: claim(tokenId, amount)
-    Facility->>Prime: safeTransfer(amount)
+    Note over Prime,Beacon: 4. COLLECT (repeats)
+    Prime->>Facility: collect(tokenId, amount)
+    Facility->>Prime: transfer(amount)
     Note right of Facility: NFAT persists (not burned)
 ```
 
@@ -78,57 +78,58 @@ Steps 3–4 repeat as the Halo makes payments over the life of the deal.
 
 ### Payment Patterns
 
-All patterns use the same `repay()` / `claim()` cycle - the difference is off-chain coordination:
+All patterns use the same `repay()` / `collect()` cycle - the difference is off-chain coordination:
 
 | Pattern | Halo action | Prime action | NFAT state |
 |---------|-------------|--------------|------------|
-| **Bullet loan** | Repay principal + yield at maturity | Claim once | Persists |
-| **Amortizing** | Repay each scheduled payment | Claim after each repayment | Persists throughout |
-| **Periodic interest** | Repay interest periodically | Claim as available | Persists until final |
+| **Bullet loan** | Repay principal + yield at maturity | Collect once | Persists |
+| **Amortizing** | Repay each scheduled payment | Collect after each repayment | Persists throughout |
+| **Periodic interest** | Repay interest periodically | Collect as available | Persists until final |
 
 Because the NFAT is never burned, the contract does not need to distinguish between these patterns - the Synome and NFAT Beacon handle scheduling.
 
 ### Token ID Strategy
 
-Token IDs are provided by the Operator, who coordinates with the Synome to ensure uniqueness. The ERC-721 `_mint` reverts if a `tokenId` already exists, preventing duplicates on-chain.
+Token IDs are provided by the Operator, who coordinates with the Synome to ensure uniqueness. Token ID `0` is rejected. The ERC-721 `_mint` reverts if a `tokenId` already exists, preventing duplicates on-chain.
 
 ## Business Requirements
 
 Requirements organized by lifecycle phase.
 
-### 1. Deposit & Queuing
+### 1. Subscribe & Queuing
 
 | # | Requirement |
 |---|-------------|
-| D-1 | A Prime may deposit a designated ERC-20 asset into the facility queue |
-| D-2 | A depositor may withdraw any queued balance before issuance |
-| D-3 | Deposits are open to anyone (no identity gating) |
+| D-1 | A Prime may subscribe a designated ERC-20 asset into the facility queue |
+| D-2 | `subscribe()` accepts a `bytes data` parameter for off-chain term metadata |
+| D-3 | A subscriber may withdraw any queued balance before issuance |
+| D-4 | Subscriptions are open to anyone (no identity gating on subscribe) |
 
 ### 2. Issuance
 
 | # | Requirement |
 |---|-------------|
-| I-1 | The Operator may issue an NFAT by claiming funds from a depositor's queue and minting an ERC-721 |
+| I-1 | The Operator may issue an NFAT by claiming funds from a subscriber's queue and minting an ERC-721 |
 | I-2 | Issued funds are transferred to the recipient (NFAT PAU (ALMProxy)) |
 | I-3 | An NFAT may be issued with zero principal - e.g. rollover existing NFAT into a new NFAT, with terms detailed in Synome |
-| I-4 | Token IDs are Operator-assigned; uniqueness enforced (e.g. by ERC-721 `_mint`) |
-| I-5 | A single deposit can be split across multiple NFATs with different principals (partial sweeps) |
+| I-4 | Token IDs are Operator-assigned; `tokenId != 0`; uniqueness enforced by ERC-721 `_mint` |
+| I-5 | A single subscription can be split across multiple NFATs with different principals (partial sweeps) |
 
 ### 3. Repayment & Payments
 
 | # | Requirement |
 |---|-------------|
-| F-1 | Repaid amounts accumulate until claimed |
-| F-2 | The same repay/claim cycle supports bullet, amortizing, and periodic-interest patterns |
+| F-1 | Repaid amounts accumulate until collected |
+| F-2 | The same repay/collect cycle supports bullet, amortizing, and periodic-interest patterns |
 | F-3 | Payment scheduling is managed by the Synome and NFAT Beacon |
 
-### 4. Claims
+### 4. Collection
 
 | # | Requirement |
 |---|-------------|
-| C-1 | Only the NFAT owner may claim repaid amounts (identity-gated when Identity Network is set) |
-| C-2 | The caller specifies the claim amount - for tax optimization purposes |
-| C-3 | The NFAT is not burned on claim - it persists for future repayment cycles |
+| C-1 | Only the NFAT owner may collect repaid amounts (identity-gated when Identity Network is set) |
+| C-2 | The caller specifies the collect amount - for tax optimization purposes |
+| C-3 | The NFAT is not burned on collection - it persists for future repayment cycles |
 
 ### 5. NFAT Transfers
 
@@ -141,225 +142,250 @@ Requirements organized by lifecycle phase.
 
 | # | Requirement |
 |---|-------------|
-| A-1 | Transfers and claims are optionally gated by an on-chain Identity Network |
-| A-2 | `DEFAULT_ADMIN_ROLE` (Halo Proxy) manages roles, recipient address, identity network, unpausing, and rescue |
-| A-3 | `ROLE_OPERATOR` (NFAT Beacon) issues NFATs |
-| A-4 | `ROLE_PAUSE` can freeze the facility — either to retire it or in response to issues |
+| A-1 | Transfers and collection are optionally gated by an on-chain Identity Network |
+| A-2 | Wards (admin) manage configuration, roles, rescue, and unfreeze |
+| A-3 | Buds (operators) issue NFATs |
+| A-4 | Cops (freezers) can halt the facility via `stop()` |
 
 ### 7. Admin & Emergency
 
 | # | Requirement |
 |---|-------------|
-| E-1 | Admin may recover any ERC-20 token held by the facility in case of operational failures |
-| E-2 | Admin may update the recipient address |
-| E-3 | `ROLE_PAUSE` can freeze the facility (pauses `deposit`, `issue`, `repay`, `claim`); only admin can unpause |
+| E-1 | Wards may recover any ERC-20 token held by the facility in case of operational failures |
+| E-2 | Wards may update the recipient address via `file()` |
+| E-3 | Cops can freeze the facility (stops `subscribe`, `issue`, `repay`, `collect`); only wards can resume via `start()` |
 
-## Contracts
+## Contract
 
 ### NFATFacility
 
-**File:** `src/NFATFacility.sol`
+**Source:** [`sky-ecosystem/nfat`](https://github.com/sky-ecosystem/nfat) (imported via `lib/nfat`)
 
-**Inherits:** ERC721, AccessControl, Pausable, ReentrancyGuard
+**Inherits:** ERC721
 
-The core contract. Manages the deposit queue, NFAT issuance, repayment (NFAT payments), and claims all in a single contract.
+The core contract. Manages the subscription queue, NFAT issuance, repayment, and collection all in a single contract. Uses MakerDAO-style `wards`/`buds`/`cops` for access control and a `stopped` flag instead of OpenZeppelin's Pausable.
 
 #### State
 
 | Variable | Type | Mutability | Description |
 |----------|------|------------|-------------|
-| `asset` | `IERC20` | immutable | ERC-20 token accepted for deposits and claims |
-| `recipient` | `address` | mutable | Address that receives funds when NFATs are issued (typically the NFAT PAU (ALMProxy)); updatable via `setRecipient()` |
-| `identityNetwork` | `IIdentityNetwork` | mutable | Optional membership gating; `address(0)` disables checks |
-| `deposits` | `mapping(address => uint256)` | mutable | Queued deposit balance per depositor |
-| `claimable` | `mapping(uint256 => uint256)` | mutable | Repaid (claimable) balance per NFAT token ID |
+| `gem` | `GemLike` | immutable | ERC-20 token accepted for subscriptions, repayments, and collection |
+| `recipient` | `address` | mutable | Address that receives funds when NFATs are issued; configurable via `file("recipient", addr)` |
+| `identityNetwork` | `IdentityNetworkLike` | mutable | Optional membership gating; `address(0)` disables checks; configurable via `file("identityNetwork", addr)` |
+| `baseURI` | `string` | mutable | ERC-721 base URI for token metadata; configurable via `file("baseURI", str)` |
+| `stopped` | `bool` | mutable | When `true`, blocks `subscribe`, `issue`, `repay`, `collect` |
+| `deposits` | `mapping(address => uint256)` | mutable | Queued subscription balance per subscriber |
+| `collectable` | `mapping(uint256 => uint256)` | mutable | Repaid (collectable) balance per NFAT token ID |
+| `wards` | `mapping(address => uint256)` | mutable | Admin authorization (1 = authorized) |
+| `buds` | `mapping(address => uint256)` | mutable | Operator authorization (1 = authorized) |
+| `cops` | `mapping(address => uint256)` | mutable | Freezer authorization (1 = authorized) |
 
-#### Roles
+#### Access Control
 
-| Role | Actor | Purpose |
-|------|-------|---------|
-| `DEFAULT_ADMIN_ROLE` | HaloProxy | Role administration, recipient updates, identity network management, rescue, unpausing. Held by Halo Proxy which can make updates through spells. |
-| `ROLE_OPERATOR` | Halo's GovOps/NFAT Beacon | Pulls funds and issues NFATs |
-| `ROLE_PAUSE` | Configurable | Freezes the facility - either to retire it or in response to issues. Pauses `deposit`, `issue`, `repay`, `claim`. `withdraw` is intentionally exempt so depositors can always exit. Only `DEFAULT_ADMIN_ROLE` can unpause. |
+The contract uses MakerDAO-style authorization patterns instead of OpenZeppelin's AccessControl.
+
+| Role | Mapping | Modifier | Actor | Purpose |
+|------|---------|----------|-------|---------|
+| Ward | `wards` | `auth` | Halo Proxy | Full admin: configuration, role management, rescue, unfreezing. Deployer is auto-ward. |
+| Bud | `buds` | `toll` | NFAT Beacon | Operator: pulls funds and issues NFATs |
+| Cop | `cops` | `cop` | Configurable | Freezer: can halt the facility via `stop()` |
+
+**Role management (ward-only):**
+- `rely(address)` / `deny(address)` — add/remove wards
+- `kiss(address)` / `diss(address)` — add/remove buds (operators)
+- `addFreezer(address)` / `removeFreezer(address)` — add/remove cops (freezers)
 
 #### Constructor
 
 ```solidity
 constructor(
-    string memory name_,       // ERC721 name and symbol
-    address admin,             // DEFAULT_ADMIN_ROLE
-    address asset_,            // immutable ERC-20
-    address recipient_,        // initial recipient (typically NFAT PAU (ALMProxy))
-    address identityNetwork_,  // optional (can be address(0))
-    address operator           // ROLE_OPERATOR
+    address gem_,          // immutable ERC-20 token
+    string memory name_,   // ERC-721 name
+    string memory symbol_  // ERC-721 symbol
 )
 ```
 
-All address parameters except `identityNetwork_` are validated non-zero.
+The deployer is automatically set as a ward. No other roles are assigned at construction - the deployer must call `file()`, `kiss()`, and `addFreezer()` to configure the facility.
 
 #### Functions
 
-**`deposit(uint256 amount)`**
+**`subscribe(uint256 amount, bytes calldata data)`**
 
-Queues `asset` (e.g. sUSDS) into the facility.
+Queues `gem` (e.g. sUSDS) into the facility. The `data` parameter is emitted in the event for off-chain term metadata. Zero-amount subscriptions are allowed (emits event with metadata only).
 
 | | |
 |---|---|
-| Access | Any, `whenNotPaused` |
-| Guards | `amount > 0` |
-| Effects | `deposits[msg.sender] += amount` |
-| Interactions | `asset.safeTransferFrom(msg.sender, this, amount)` |
-| Event | `Deposited(depositor, amount)` |
+| Access | Any, `notStopped` |
+| Guards | None (zero amount allowed) |
+| Effects | If `amount > 0`: `deposits[msg.sender] += amount` |
+| Interactions | If `amount > 0`: `gem.transferFrom(msg.sender, this, amount)` |
+| Event | `Subscribe(depositor, amount, data)` |
 
 **`withdraw(uint256 amount)`**
 
-Withdraws queued funds before issuance. No gating - depositors should always be able to withdraw.
+Withdraws queued funds before issuance. Not gated by `stopped` - subscribers should always be able to exit.
 
 | | |
 |---|---|
 | Access | Any |
 | Guards | `amount > 0`, `deposits[msg.sender] >= amount` |
 | Effects | `deposits[msg.sender] -= amount` |
-| Interactions | `asset.safeTransfer(msg.sender, amount)` |
-| Event | `Withdrawn(depositor, amount)` |
+| Interactions | `gem.transfer(msg.sender, amount)` |
+| Event | `Withdraw(depositor, amount)` |
 
-**`issue(address depositor, uint256 amount, uint256 tokenId)`**
+**`issue(address to, uint256 tokenId, uint256 amount)`**
 
-Claims funds from a depositor's queue and mints an NFAT. `amount` may be zero to mint an empty NFAT for future repayment.
+Claims funds from a subscriber's queue and mints an NFAT. `amount` may be zero to mint an empty NFAT for future repayment.
 
 | | |
 |---|---|
-| Access | `ROLE_OPERATOR`, `whenNotPaused` |
-| Guards | `depositor != address(0)`, if `amount > 0`: `deposits[depositor] >= amount` |
-| Effects | `deposits[depositor] -= amount` (if > 0), `_mint(depositor, tokenId)` |
-| Interactions | `asset.safeTransfer(recipient, amount)` (if > 0) |
-| Event | `Issued(depositor, amount, tokenId)` |
+| Access | Bud (`toll`), `notStopped` |
+| Guards | `tokenId != 0`, `deposits[to] >= amount` |
+| Effects | `deposits[to] -= amount`, `_mint(to, tokenId)` |
+| Interactions | If `amount > 0`: `gem.transfer(recipient, amount)` |
+| Event | `Issue(to, tokenId, amount)` |
 
 **`repay(uint256 tokenId, uint256 amount)`**
 
-Repays an NFAT for the holder to claim. Anyone can call (caller provides tokens).
+Repays an NFAT for the holder to collect. Anyone can call (caller provides tokens).
 
 | | |
 |---|---|
-| Access | Any, `whenNotPaused` |
+| Access | Any, `notStopped` |
 | Guards | `amount > 0`, token must exist |
-| Effects | `claimable[tokenId] += amount` |
-| Interactions | `asset.safeTransferFrom(msg.sender, this, amount)` |
-| Event | `Repaid(tokenId, msg.sender, amount)` |
+| Effects | `collectable[tokenId] += amount` |
+| Interactions | `gem.transferFrom(msg.sender, this, amount)` |
+| Event | `Repay(sender, tokenId, amount)` |
 
-**`claim(uint256 tokenId, uint256 amount)`**
+**`collect(uint256 tokenId, uint256 amount)`**
 
-Claims repaid amounts for an NFAT. The caller specifies the amount to claim. The NFAT is **not** burned.
+Collects repaid amounts for an NFAT. The caller specifies the amount. The NFAT is **not** burned.
 
 | | |
 |---|---|
-| Access | NFAT owner only (identity-gated), `whenNotPaused` |
-| Guards | `ownerOf(tokenId) == msg.sender`, `_requireMember(msg.sender)`, `amount > 0`, `claimable[tokenId] >= amount` |
-| Effects | `claimable[tokenId] -= amount` |
-| Interactions | `asset.safeTransfer(msg.sender, amount)` |
-| Event | `Claimed(tokenId, claimer, amount)` |
+| Access | NFAT owner only (identity-gated), `notStopped` |
+| Guards | `amount > 0`, `collectable[tokenId] >= amount`, `msg.sender == ownerOf(tokenId)`, identity check |
+| Effects | `collectable[tokenId] -= amount` |
+| Interactions | `gem.transfer(msg.sender, amount)` |
+| Event | `Collect(tokenId, amount)` |
+
+**`file(bytes32 what, address data)`**
+
+Sets configuration parameters. Supported keys: `"recipient"`, `"identityNetwork"`.
+
+| | |
+|---|---|
+| Access | Ward (`auth`) |
+| Event | `File(what, data)` |
+
+**`file(bytes32 what, string calldata data)`**
+
+Sets string configuration. Supported key: `"baseURI"`.
+
+| | |
+|---|---|
+| Access | Ward (`auth`) |
+| Event | `File(what, data)` |
 
 **`rescue(address token, address to, uint256 amount)`**
 
-Rescue any ERC-20 token held by the facility. Does not adjust internal accounting - use `rescueDeposit` or `rescueRepayment` for tracked balances.
+Rescue any ERC-20 token held by the facility. Does not adjust internal accounting - use `rescueDeposit` or `rescueCollectable` for tracked balances.
 
 | | |
 |---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
-| Guards | `to != address(0)` |
-| Interactions | `IERC20(token).safeTransfer(to, amount)` |
-| Event | `Rescued(token, to, amount)` |
+| Access | Ward (`auth`) |
+| Interactions | `GemLike(token).transfer(to, amount)` |
+| Event | `Rescue(token, to, amount)` |
 
 **`rescueDeposit(address depositor, address to, uint256 amount)`**
 
-Rescue from a depositor's queued balance with proper accounting.
+Rescue from a subscriber's queued balance with proper accounting.
 
 | | |
 |---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
-| Guards | `to != address(0)`, `amount > 0`, `deposits[depositor] >= amount` |
+| Access | Ward (`auth`) |
+| Guards | `deposits[depositor] >= amount` |
 | Effects | `deposits[depositor] -= amount` |
-| Interactions | `asset.safeTransfer(to, amount)` |
-| Event | `RescuedDeposit(depositor, to, amount)` |
+| Interactions | `gem.transfer(to, amount)` |
+| Event | `RescueDeposit(depositor, to, amount)` |
 
-**`rescueRepayment(uint256 tokenId, address to, uint256 amount)`**
+**`rescueCollectable(uint256 tokenId, address to, uint256 amount)`**
 
-Rescue from an NFAT's claimable balance with proper accounting.
-
-| | |
-|---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
-| Guards | `to != address(0)`, `amount > 0`, `claimable[tokenId] >= amount` |
-| Effects | `claimable[tokenId] -= amount` |
-| Interactions | `asset.safeTransfer(to, amount)` |
-| Event | `RescuedRepayment(tokenId, to, amount)` |
-
-**`pause()`**
-
-Freezes the facility. Pauses `deposit`, `issue`, `repay`, and `claim`. `withdraw` is intentionally exempt so depositors can always exit. Can be used to retire a facility or in response to issues.
+Rescue from an NFAT's collectable balance with proper accounting.
 
 | | |
 |---|---|
-| Access | `ROLE_PAUSE` |
+| Access | Ward (`auth`) |
+| Guards | `collectable[tokenId] >= amount` |
+| Effects | `collectable[tokenId] -= amount` |
+| Interactions | `gem.transfer(to, amount)` |
+| Event | `RescueCollectable(tokenId, to, amount)` |
 
-**`unpause()`**
+**`stop()`**
 
-Resumes facility operations after a pause.
-
-| | |
-|---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
-
-**`setRecipient(address recipient_)`**
-
-Updates the recipient address (where funds from NFAT issuance are sent). Typically set to the NFAT PAU (ALMProxy).
+Freezes the facility. Stops `subscribe`, `issue`, `repay`, and `collect`. `withdraw` is intentionally exempt so subscribers can always exit.
 
 | | |
 |---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
-| Guards | `recipient_ != address(0)` |
-| Effects | `recipient = recipient_` |
-| Event | `RecipientUpdated(recipient_)` |
+| Access | Cop (`cop`) |
+| Effects | `stopped = true` |
+| Event | `Stop()` |
 
-**`setIdentityNetwork(address manager)`**
+**`start()`**
 
-Sets or clears the identity network. Pass `address(0)` to disable.
+Resumes facility operations after a stop.
 
 | | |
 |---|---|
-| Access | `DEFAULT_ADMIN_ROLE` |
-| Effects | `identityNetwork = IIdentityNetwork(manager)` |
-| Event | `IdentityNetworkUpdated(manager)` |
+| Access | Ward (`auth`) |
+| Effects | `stopped = false` |
+| Event | `Start()` |
 
 #### Internal: Identity Network Enforcement
 
-`_requireMember(address account)` - if `identityNetwork != address(0)`, calls `identityNetwork.isMember(account)` and reverts if false. Called by the `_update()` ERC-721 override.
+`_update(address to, uint256 tokenId, address auth)` - overrides ERC-721. Requires `to` to be an Identity Network member (when set). This gates mints and transfers.
 
-`_update(address to, uint256 tokenId, address auth)` - overrides ERC-721. If `to != address(0)` (mint or transfer), enforces identity check. Burns (`to == address(0)`) skip the check.
+`collect()` - independently checks `identityNetwork.isMember(msg.sender)` before allowing collection.
 
 #### Events
 
 ```solidity
-event FacilityCreated(address indexed asset, address indexed recipient, address indexed admin, address operator);
-event Deposited(address indexed depositor, uint256 amount);
-event Withdrawn(address indexed depositor, uint256 amount);
-event Issued(address indexed depositor, uint256 amount, uint256 indexed tokenId);
-event Repaid(uint256 indexed tokenId, address indexed repayer, uint256 amount);
-event Claimed(uint256 indexed tokenId, address indexed claimer, uint256 amount);
-event RecipientUpdated(address indexed recipient);
-event IdentityNetworkUpdated(address indexed manager);
-event Rescued(address indexed token, address indexed to, uint256 amount);
-event RescuedDeposit(address indexed depositor, address indexed to, uint256 amount);
-event RescuedRepayment(uint256 indexed tokenId, address indexed to, uint256 amount);
+// Access control
+event Rely(address indexed usr);
+event Deny(address indexed usr);
+event Kiss(address indexed usr);
+event Diss(address indexed usr);
+event AddFreezer(address indexed usr);
+event RemoveFreezer(address indexed usr);
+
+// Circuit breaker
+event Stop();
+event Start();
+
+// Configuration
+event File(bytes32 indexed what, address data);
+event File(bytes32 indexed what, string data);
+
+// Lifecycle
+event Subscribe(address indexed depositor, uint256 amount, bytes data);
+event Withdraw(address indexed depositor, uint256 amount);
+event Issue(address indexed to, uint256 indexed tokenId, uint256 amount);
+event Repay(address indexed sender, uint256 indexed tokenId, uint256 amount);
+event Collect(uint256 indexed tokenId, uint256 amount);
+
+// Rescue
+event Rescue(address indexed token, address indexed to, uint256 amount);
+event RescueDeposit(address indexed depositor, address indexed to, uint256 amount);
+event RescueCollectable(uint256 indexed tokenId, address indexed to, uint256 amount);
 ```
 
 ## Identity Network
 
-ERC-721 transfers and claims are optionally gated by an Identity Network - an on-chain registry implementing:
+ERC-721 transfers and collection are optionally gated by an Identity Network - an on-chain registry implementing:
 
 ```solidity
-interface IIdentityNetwork {
-    function isMember(address account) external view returns (bool);
+interface IdentityNetworkLike {
+    function isMember(address usr) external view returns (bool);
 }
 ```
 
@@ -367,36 +393,36 @@ interface IIdentityNetwork {
 
 **Enforcement points:**
 - `_update()` - recipient of mints and transfers must be a member
-- `claim()` - caller must be a member
+- `collect()` - caller must be a member
 - Burns are exempt (allows emergency exit regardless of membership)
 
 **Management:**
-- `setIdentityNetwork(address)` - callable by `DEFAULT_ADMIN_ROLE`
+- `file("identityNetwork", address)` - callable by wards
 - Pass `address(0)` to disable all membership checks
 - Identity Network is managed externally (e.g., by Halos)
 
-## Rescue & Pausing
+## Rescue & Stopping
 
-### Pause
+### Stop
 
-The `ROLE_PAUSE` holder can freeze the facility by calling `pause()`. This pauses `deposit`, `issue`, `repay`, and `claim`. `withdraw` is intentionally exempt - depositors can always exit. Only `DEFAULT_ADMIN_ROLE` can call `unpause()`.
+Any cop can freeze the facility by calling `stop()`. This stops `subscribe`, `issue`, `repay`, and `collect`. `withdraw` is intentionally exempt - subscribers can always exit. Only a ward can call `start()`.
 
 Use cases:
-- **Retire a facility** - pause permanently once all claims are settled
+- **Retire a facility** - stop permanently once all collections are settled
 - **Incident response** - freeze operations while investigating an issue
 
 ### Rescue
 
-The facility holds two types of tracked balances — `deposits[address]` (queued pre-issuance) and `claimable[tokenId]` (repaid NFAT balances) — plus potentially untracked surplus (e.g. tokens sent directly to the contract). Three rescue functions cover the full recovery surface.
+The facility holds two types of tracked balances — `deposits[address]` (queued pre-issuance) and `collectable[tokenId]` (repaid NFAT balances) — plus potentially untracked surplus (e.g. tokens sent directly to the contract). Three rescue functions cover the full recovery surface.
 
 #### Rescue with accounting
 
 | Scenario | Function | Accounting |
 |----------|----------|------------|
-| Need to recover queued deposits on behalf of a depositor | `rescueDeposit()` | Decrements `deposits[depositor]` |
-| Need to recover repaid balance from an NFAT (e.g. wrong NFAT or wrong amount) | `rescueRepayment()` | Decrements `claimable[tokenId]` |
+| Need to recover queued subscriptions on behalf of a subscriber | `rescueDeposit()` | Decrements `deposits[depositor]` |
+| Need to recover repaid balance from an NFAT (e.g. wrong NFAT or wrong amount) | `rescueCollectable()` | Decrements `collectable[tokenId]` |
 
-These are admin-only (`DEFAULT_ADMIN_ROLE` / Halo Proxy via spell). They adjust internal accounting so the invariant `asset.balanceOf(facility) >= sum(deposits) + sum(claimable)` is preserved.
+These are ward-only (Halo Proxy via spell). They adjust internal accounting so the invariant `gem.balanceOf(facility) >= sum(deposits) + sum(collectable)` is preserved.
 
 #### Last resort: Generic rescue
 
@@ -404,7 +430,7 @@ These are admin-only (`DEFAULT_ADMIN_ROLE` / Halo Proxy via spell). They adjust 
 |----------|----------|------------|
 | Recover any ERC-20 (wrong token sent, untracked surplus) | `rescue()` | None |
 
-The generic `rescue()` does not adjust `deposits` or `claimable`. Using it on the facility's own asset will break the accounting invariant — it exists for cases where no tracked balance corresponds to the tokens being recovered. Prefer the accounting-aware functions above when possible.
+The generic `rescue()` does not adjust `deposits` or `collectable`. Using it on the facility's own gem will break the accounting invariant — it exists for cases where no tracked balance corresponds to the tokens being recovered. Prefer the accounting-aware functions above when possible.
 
 ## Deviations from Laniakea Spec
 
@@ -414,17 +440,17 @@ This implementation diverges from the [canonical NFAT specification](https://git
 
 **Spec:** NFAT is burned when the holder redeems (bullet) or "spent" to reduce principal (amortizing).
 
-**Implementation:** The NFAT persists after funds are claimed. Repayment and claiming can repeat indefinitely.
+**Implementation:** The NFAT persists after funds are collected. Repayment and collection can repeat indefinitely.
 
-**Rationale:** A persistent token naturally supports all payment patterns (bullet, amortizing, periodic interest) without special-casing partial vs. full redemption. Burning risks loss of funds if unclaimed amounts exist. The NFAT serves as a permanent on-chain receipt.
+**Rationale:** A persistent token naturally supports all payment patterns (bullet, amortizing, periodic interest) without special-casing partial vs. full redemption. Burning risks loss of funds if uncollected amounts exist. The NFAT serves as a permanent on-chain receipt.
 
 ### 2. Single contract instead of Facility + Redeemer
 
 **Spec:** Separate Queue/Facility contract and Redeemer contract per facility.
 
-**Implementation:** `NFATFacility` combines queue, issuance, repayment, and claims in a single contract.
+**Implementation:** `NFATFacility` combines queue, issuance, repayment, and collection in a single contract.
 
-**Rationale:** The facility is a transit point, not a long-term custodial store. The simplicity of a single contract outweighs the modularity of splitting. There is no functional reason for funds to flow through a separate redeemer when `repay()` and `claim()` on the same contract achieve the same result.
+**Rationale:** The facility is a transit point, not a long-term custodial store. The simplicity of a single contract outweighs the modularity of splitting. There is no functional reason for funds to flow through a separate redeemer when `repay()` and `collect()` on the same contract achieve the same result.
 
 ### 3. Simple deposit accounting instead of shares
 
@@ -453,10 +479,10 @@ This implementation diverges from the [canonical NFAT specification](https://git
    Argument against: New facilities can be deployed; funds don't need migration since facilities are transit points. With factories and Synome automation, deploying new facilities without painful migration should be possible.
 
 ### 3. Should all NFAT facilities behave identically or can they differ?
-   In the current Laniakea spec a factory deploys identical `NFATFacility` contracts. Future needs (e.g., specific legal jurisdictions, custom restrictions) may require variants. The interface (`deposit`, `issue`, `repay`, `claim`) should remain stable even if implementations diverge.
+   In the current Laniakea spec a factory deploys identical `NFATFacility` contracts. Future needs (e.g., specific legal jurisdictions, custom restrictions) may require variants. The interface (`subscribe`, `issue`, `repay`, `collect`) should remain stable even if implementations diverge.
 
-### 4. Should the NFAT facility support granular pause controls on functions?
-   In the POC `ROLE_PAUSE` can freeze the facility (`deposit`, `issue`, `repay`, `claim`). `withdraw` is exempt. Only `DEFAULT_ADMIN_ROLE` can unpause.
+### 4. Should the NFAT facility support granular stop controls on functions?
+   Currently cops can freeze the entire facility (`subscribe`, `issue`, `repay`, `collect`). `withdraw` is exempt. Only wards can resume via `start()`.
 
-### 5. Should repayers be able to self-service retract repayment (`unrepay()`)?
-   Currently, retracting repaid amounts requires admin intervention via `rescueRepayment()`, which means a spell is needed to correct any repayment mistake. An alternative is a self-service `unrepay()` function that lets the original repayer reclaim their contribution directly. This would require per-repayer accounting (`claimable[tokenId][repayer]` instead of flat `claimable[tokenId]`), which in turn means `claim()` must specify which repayer to draw from. The tradeoff: self-service unrepay avoids the spell overhead for operational corrections (e.g. Halo repays wrong NFAT or wrong amount), but adds complexity to the claim flow and mapping structure.
+### 5. Should repayers be able to self-service retract repayment?
+   Currently, retracting repaid amounts requires admin intervention via `rescueCollectable()`, which means a spell is needed to correct any repayment mistake. An alternative is a self-service retract function that lets the original repayer reclaim their contribution directly. This would require per-repayer accounting (`collectable[tokenId][repayer]` instead of flat `collectable[tokenId]`), which in turn means `collect()` must specify which repayer to draw from. The tradeoff: self-service retract avoids the spell overhead for operational corrections (e.g. Halo repays wrong NFAT or wrong amount), but adds complexity to the collect flow and mapping structure.

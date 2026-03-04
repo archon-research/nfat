@@ -5,6 +5,12 @@
       "rev": "1801b0541f4fda118a10798fd3486bb7051c5dd6"
     }
   },
+  "lib/nfat": {
+    "branch": {
+      "name": "dev",
+      "rev": "b9eaaec877f4670ba4b14e0d8858235e2258a1ca"
+    }
+  },
   "lib/openzeppelin-contracts": {
     "tag": {
       "name": "v5.5.0",
